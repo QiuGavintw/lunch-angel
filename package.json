@@ -1,0 +1,28 @@
+{
+  "name": "lunch-angel",
+  "version": "1.0.0",
+  "description": "午餐小天使 - 高中生查詢校園午餐的 LINE 聊天機器人 Backend",
+  "type": "module",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "sync": "node src/lunch/sync.js"
+  },
+  "keywords": [
+    "line",
+    "bot",
+    "lunch",
+    "express"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@line/bot-sdk": "^11.2.0",
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "pdfjs-dist": "^5.4.296"
+  }
+}
