@@ -3,3 +3,4 @@ node_modules/
 *.log
 data/official-sync.json
 data/*.lock
+data/rich-menu.json

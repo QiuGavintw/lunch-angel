@@ -168,6 +168,20 @@ export const INFO_REPLY = [
   '👼 午餐小天使祝你用餐愉快！',
 ].join('\n');
 
+export const ABOUT_REPLY = [
+  '👼 午餐小天使',
+  '',
+  '我是馬公高中午餐查詢小助手，',
+  '幫你快速查詢每日午餐資訊。',
+  '',
+  '🍱 今日午餐',
+  '📅 明日午餐',
+  '📆 本週午餐',
+  '🔎 查詢指定日期',
+  '',
+  '祝你每天都有美味午餐！',
+].join('\n');
+
 export const DATE_PROMPT_REPLY = [
   '📅 請輸入要查詢的日期。',
   '',
@@ -226,6 +240,8 @@ export async function getLunchReplyFor(action) {
       return DATE_PROMPT_REPLY;
     case 'info':
       return INFO_REPLY;
+    case 'about':
+      return ABOUT_REPLY;
     default:
       return DATE_FORMAT_ERROR_REPLY;
   }
