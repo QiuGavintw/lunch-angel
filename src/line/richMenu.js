@@ -90,7 +90,7 @@ export async function getExistingRichMenu() {
   const lineClient = getClient();
   if (!lineClient) return null;
 
-  const list = await lineClient.messagingApi.getRichMenuList();
+  const list = await lineClient.clients.messagingApi.getRichMenuList();
   const richMenus = list.richmenus ?? [];
   return richMenus.find((menu) => menu.name === RICH_MENU_NAME) ?? null;
 }
@@ -99,7 +99,7 @@ export async function createRichMenu() {
   const lineClient = getClient();
   if (!lineClient) return null;
 
-  const response = await lineClient.messagingApi.createRichMenu(buildRichMenuRequest());
+  const response = await lineClient.clients.messagingApi.createRichMenu(buildRichMenuRequest());
   return response?.richMenuId ?? null;
 }
 
@@ -109,7 +109,7 @@ export async function uploadRichMenuImage(richMenuId) {
 
   const buffer = await readFile(RICH_MENU_IMAGE_PATH);
   const blob = new Blob([buffer], { type: 'image/png' });
-  await lineClient.messagingApiBlob.setRichMenuImage(richMenuId, blob);
+  await lineClient.clients.messagingApiBlob.setRichMenuImage(richMenuId, blob);
   return true;
 }
 
@@ -117,7 +117,7 @@ export async function setDefaultRichMenu(richMenuId) {
   const lineClient = getClient();
   if (!lineClient) return false;
 
-  await lineClient.messagingApi.setDefaultRichMenu(richMenuId);
+  await lineClient.clients.messagingApi.setDefaultRichMenu(richMenuId);
   return true;
 }
 
@@ -125,7 +125,7 @@ export async function deleteRichMenu(richMenuId) {
   const lineClient = getClient();
   if (!lineClient) return false;
 
-  await lineClient.messagingApi.deleteRichMenu(richMenuId);
+  await lineClient.clients.messagingApi.deleteRichMenu(richMenuId);
   return true;
 }
 
@@ -142,6 +142,27 @@ async function writeRichMenuMetadata(richMenuId) {
   await import('node:fs/promises').then(({ writeFile }) =>
     writeFile(RICH_MENU_METADATA_PATH, JSON.stringify(metadata, null, 2))
   );
+}
+
+async function richMenuHasImage(richMenuId) {
+  try {
+    const stream = await getClient().clients.messagingApiBlob.getRichMenuImage(richMenuId);
+    for await (const _ of stream) {
+      break;
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function isDefaultRichMenu(richMenuId) {
+  try {
+    const current = await getClient().clients.messagingApi.getDefaultRichMenuId();
+    return current?.richMenuId === richMenuId;
+  } catch {
+    return false;
+  }
 }
 
 export async function ensureRichMenu({ logger = console } = {}) {
@@ -161,6 +182,19 @@ export async function ensureRichMenu({ logger = console } = {}) {
   const existing = await getExistingRichMenu();
   if (existing) {
     logger.log('[rich-menu] 已存在 lunch-angel-main，SKIP');
+
+    const hasImage = await richMenuHasImage(existing.richMenuId);
+    if (!hasImage) {
+      logger.log('[rich-menu] 偵測到缺少圖片，補上傳圖片');
+      await uploadRichMenuImage(existing.richMenuId);
+    }
+
+    const isDefault = await isDefaultRichMenu(existing.richMenuId);
+    if (!isDefault) {
+      logger.log('[rich-menu] 尚未設為 default，補設定');
+      await setDefaultRichMenu(existing.richMenuId);
+    }
+
     await writeRichMenuMetadata(existing.richMenuId);
     return { ok: true, status: 'SKIP', richMenuId: existing.richMenuId };
   }
