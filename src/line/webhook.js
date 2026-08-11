@@ -10,14 +10,21 @@ import {
   getLunchReplyFor,
   formatLunchMessage,
   formatEmptyDateMessage,
-  parseDateInput,
   DATE_PROMPT_REPLY,
   DATE_FORMAT_ERROR_REPLY,
 } from '../lunch/service.js';
+import {
+  parseDateInputExtended,
+  setPendingDateQuery,
+  clearPendingDateQuery,
+  isPendingDateQuery,
+  isCancelText,
+} from '../lunch/dateQuery.js';
 
 const TEXT_REPLY = '👼 你好！我是午餐小天使～\n你可以直接輸入「今日午餐」查詢，也可以使用下面的按鈕快速查詢喔！';
 const NON_TEXT_REPLY = '👼 午餐小天使目前主要提供午餐菜單查詢喔～🍱';
 const LUNCH_ERROR_REPLY = '🍱 今日午餐\n\n⚠️ 午餐資料讀取失敗，請稍後再試。';
+const DATE_QUERY_CANCEL_REPLY = '✅ 已取消日期查詢。\n\n需要時再輸入日期，或使用下方按鈕快速查詢！';
 const LUNCH_KEYWORDS = new Set(['今日午餐', '今天午餐', '午餐']);
 
 const QUICK_REPLY_ITEMS = [
@@ -94,29 +101,51 @@ function logLineReplyError(err) {
   }
 }
 
-function buildReplyText(event) {
+async function buildReplyText(event) {
   if (event.type === 'postback') {
     const action = parsePostbackAction(event.postback?.data);
-    if (!action) return `${TEXT_REPLY}\n\n⚠️ 無法辨識的操作。`;
+    if (!action) {
+      return `${TEXT_REPLY}\n\n⚠️ 無法辨識的操作。`;
+    }
+    if (action === 'date') {
+      setPendingDateQuery(event);
+      return DATE_PROMPT_REPLY;
+    }
+    clearPendingDateQuery(event);
     return getLunchReplyFor(action);
   }
 
   if (event.type !== 'message' || event.message.type !== 'text') {
+    if (isPendingDateQuery(event)) {
+      return `${NON_TEXT_REPLY}\n\n📅 ${DATE_PROMPT_REPLY}`;
+    }
     return NON_TEXT_REPLY;
   }
 
   const text = event.message.text.trim();
 
+  if (isPendingDateQuery(event)) {
+    if (isCancelText(text)) {
+      clearPendingDateQuery(event);
+      return DATE_QUERY_CANCEL_REPLY;
+    }
+    const parsedDate = parseDateInputExtended(text);
+    if (!parsedDate) {
+      return DATE_FORMAT_ERROR_REPLY;
+    }
+    clearPendingDateQuery(event);
+    const { date, lunch } = await getLunchByDate(parsedDate);
+    return lunch ? formatLunchMessage(date, lunch) : formatEmptyDateMessage(date);
+  }
+
   if (LUNCH_KEYWORDS.has(text)) {
     return getLunchReply();
   }
 
-  if (/^(\d{4}[/-]\d{1,2}[/-]\d{1,2}|\d{1,2}\/\d{1,2})$/.test(text)) {
-    const parsedDate = parseDateInput(text);
-    if (!parsedDate) return DATE_FORMAT_ERROR_REPLY;
-    return getLunchByDate(parsedDate).then(({ date, lunch }) =>
-      lunch ? formatLunchMessage(date, lunch) : formatEmptyDateMessage(date)
-    );
+  const parsedDate = parseDateInputExtended(text);
+  if (parsedDate) {
+    const { date, lunch } = await getLunchByDate(parsedDate);
+    return lunch ? formatLunchMessage(date, lunch) : formatEmptyDateMessage(date);
   }
 
   if (text === '你好' || text === '哈囉' || text === '嗨' || text === '早安' || text === '謝謝') {
@@ -141,6 +170,7 @@ async function handleEvent(event) {
   try {
     replyText = await buildReplyText(event);
   } catch (err) {
+    clearPendingDateQuery(event);
     if (event.type === 'message' && event.message?.type === 'text') {
       const text = event.message.text.trim();
       if (LUNCH_KEYWORDS.has(text)) {
@@ -196,4 +226,4 @@ export function registerWebhook(app) {
   app.post('/webhook', handlers);
 }
 
-export { buildReplyText, getTodayString, getWeekdayText, getTodayLunch, getTomorrowLunch, getWeekLunch, getLunchReplyFor, formatLunchMessage, formatEmptyDateMessage, parseDateInput, DATE_PROMPT_REPLY, DATE_FORMAT_ERROR_REPLY };
+export { buildReplyText, getTodayString, getWeekdayText, getTodayLunch, getTomorrowLunch, getWeekLunch, getLunchReplyFor, formatLunchMessage, formatEmptyDateMessage, DATE_PROMPT_REPLY, DATE_FORMAT_ERROR_REPLY };

@@ -186,10 +186,14 @@ export const DATE_PROMPT_REPLY = [
   '📅 請輸入要查詢的日期。',
   '',
   '格式：',
+  '8/12',
+  '8月12日',
   'YYYY/MM/DD',
   '',
   '例如：',
-  '2026/08/15',
+  '8/12 或 2026/08/15',
+  '',
+  '輸入「取消」可以離開查詢模式。',
 ].join('\n');
 
 export const DATE_FORMAT_ERROR_REPLY = [
