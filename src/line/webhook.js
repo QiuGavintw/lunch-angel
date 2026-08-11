@@ -43,6 +43,10 @@ const QUICK_REPLY_ITEMS = [
   },
 ];
 
+function buildQuickReply() {
+  return { items: QUICK_REPLY_ITEMS };
+}
+
 let client = null;
 
 function getClient() {
@@ -150,9 +154,7 @@ async function handleEvent(event) {
   }
 
   const message = { type: 'text', text: replyText };
-  if (replyText === TEXT_REPLY) {
-    message.quickReply = { items: QUICK_REPLY_ITEMS };
-  }
+  message.quickReply = buildQuickReply();
 
   return lineClient.replyMessage({
     replyToken: event.replyToken,
