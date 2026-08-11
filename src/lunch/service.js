@@ -69,6 +69,32 @@ function getSpecialDayLabel(lunch) {
   return null;
 }
 
+const WEEKEND_SERVICE_HINTS = [
+  /補課/,
+  /補假/,
+  /國定假日/,
+  /校慶/,
+  /有供餐/,
+  /午餐供應/,
+  /特殊供餐/,
+  /學校活動/,
+  /正常供餐/,
+];
+
+function isSpecialWeekendLunch(lunch) {
+  if (!lunch) return false;
+  const text = ['info', 'main', 'staple', 'side1', 'side2', 'side3', 'dessert']
+    .map((k) => safe(lunch[k]))
+    .join(' ');
+  return WEEKEND_SERVICE_HINTS.some((p) => p.test(text));
+}
+
+export function isWeekendDate(dateString) {
+  const [y, m, d] = String(dateString).split('-').map(Number);
+  const weekday = new Date(Date.UTC(y, m - 1, d, 12, 0, 0)).getUTCDay();
+  return weekday === 0 || weekday === 6;
+}
+
 async function readLunchData() {
   try {
     return JSON.parse(await readFile(LUNCH_DATA_PATH, 'utf8'));
@@ -203,6 +229,22 @@ export function formatWeekMessage(entries, weekDates = getThisWeekDates()) {
     const [, mo, d] = date.split('-');
     const weekday = getWeekdayText(date);
     const lunch = byDate.get(date);
+    const isWeekend = isWeekendDate(date);
+    const special = getSpecialDayLabel(lunch);
+
+    if (isWeekend) {
+      if (!lunch || !isSpecialWeekendLunch(lunch)) {
+        continue;
+      }
+      lines.push(SEP);
+      lines.push(`📅 ${mo}/${d} ${weekday}`);
+      if (special) {
+        lines.push(special);
+      }
+      lines.push(`🍚 主食：${safe(lunch.staple)}`);
+      lines.push(`🍖 主菜：${safe(lunch.main)}`);
+      continue;
+    }
 
     lines.push(SEP);
     if (!lunch) {
@@ -211,7 +253,6 @@ export function formatWeekMessage(entries, weekDates = getThisWeekDates()) {
       continue;
     }
 
-    const special = getSpecialDayLabel(lunch);
     lines.push(`📅 ${mo}/${d} ${weekday}`);
     if (special) {
       lines.push(special);
