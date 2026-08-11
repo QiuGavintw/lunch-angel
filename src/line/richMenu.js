@@ -16,7 +16,7 @@ const RICH_MENU_AREAS = [
   { label: '今日午餐', action: 'today', x: 0, y: 0, width: 833, height: 843 },
   { label: '明日午餐', action: 'tomorrow', x: 833, y: 0, width: 834, height: 843 },
   { label: '本週午餐', action: 'week', x: 1667, y: 0, width: 833, height: 843 },
-  { label: '查詢日期', action: 'date', x: 0, y: 843, width: 833, height: 843 },
+  { label: '查詢指定日期', action: 'date', x: 0, y: 843, width: 833, height: 843 },
   { label: '使用說明', action: 'info', x: 833, y: 843, width: 834, height: 843 },
   { label: '關於小天使', action: 'about', x: 1667, y: 843, width: 833, height: 843 },
 ];
@@ -213,10 +213,95 @@ export async function ensureRichMenu({ logger = console } = {}) {
   return { ok: true, status: 'CREATED', richMenuId };
 }
 
+async function deleteRichMenuImage(richMenuId) {
+  const token = process.env.LINE_CHANNEL_ACCESS_TOKEN;
+  const res = await fetch(`https://api-data.line.me/v2/bot/richmenu/${richMenuId}/content`, {
+    method: 'DELETE',
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (res.status === 404) {
+    return true;
+  }
+  if (!res.ok) {
+    const err = new Error(`delete rich menu image failed: ${res.status}`);
+    err.status = res.status;
+    throw err;
+  }
+  return true;
+}
+
+export async function updateRichMenuImage({ logger = console } = {}) {
+  const lineClient = getClient();
+  if (!lineClient) {
+    logger.error('[rich-menu] LINE_CHANNEL_ACCESS_TOKEN 尚未設定');
+    return { ok: false, status: 'NO_TOKEN' };
+  }
+
+  const metadata = await readRichMenuMetadata();
+  const richMenuId = metadata?.richMenuId;
+  if (!richMenuId) {
+    logger.error('[rich-menu] data/rich-menu.json 沒有 richMenuId，無法更新圖片');
+    return { ok: false, status: 'NO_METADATA' };
+  }
+
+  const imageExists = await import('node:fs/promises')
+    .then(({ access }) => access(RICH_MENU_IMAGE_PATH).then(() => true).catch(() => false));
+  if (!imageExists) {
+    logger.error(`[rich-menu] 找不到圖片：${RICH_MENU_IMAGE_PATH}`);
+    return { ok: false, status: 'NO_IMAGE' };
+  }
+
+  await deleteRichMenuImage(richMenuId);
+  await uploadRichMenuImage(richMenuId);
+  logger.log('[rich-menu] Rich Menu 圖片已更新');
+  return { ok: true, status: 'IMAGE_UPDATED', richMenuId };
+}
+
+export async function rebuildRichMenu({ logger = console } = {}) {
+  const lineClient = getClient();
+  if (!lineClient) {
+    logger.error('[rich-menu] LINE_CHANNEL_ACCESS_TOKEN 尚未設定');
+    return { ok: false, status: 'NO_TOKEN' };
+  }
+
+  const imageExists = await import('node:fs/promises')
+    .then(({ access }) => access(RICH_MENU_IMAGE_PATH).then(() => true).catch(() => false));
+  if (!imageExists) {
+    logger.error(`[rich-menu] 找不到圖片：${RICH_MENU_IMAGE_PATH}`);
+    return { ok: false, status: 'NO_IMAGE' };
+  }
+
+  const existing = await getExistingRichMenu();
+  if (existing) {
+    logger.log(`[rich-menu] 刪除既有 Rich Menu（${existing.richMenuId}）`);
+    await deleteRichMenu(existing.richMenuId);
+  }
+
+  const richMenuId = await createRichMenu();
+  if (!richMenuId) {
+    logger.error('[rich-menu] 建立 Rich Menu 失敗');
+    return { ok: false, status: 'CREATE_FAILED' };
+  }
+
+  await uploadRichMenuImage(richMenuId);
+  await setDefaultRichMenu(richMenuId);
+  await writeRichMenuMetadata(richMenuId);
+
+  logger.log('[rich-menu] Rich Menu 已重建並設為 default');
+  return { ok: true, status: 'REBUILT', richMenuId };
+}
+
 const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 
 if (isMain) {
-  ensureRichMenu()
+  const mode = process.argv[2] || 'ensure';
+  const task =
+    mode === 'update-image'
+      ? updateRichMenuImage()
+      : mode === 'rebuild'
+        ? rebuildRichMenu()
+        : ensureRichMenu();
+  task
     .then((result) => {
       if (!result.ok) {
         process.exit(1);

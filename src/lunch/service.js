@@ -50,6 +50,25 @@ function safe(value) {
   return value === undefined || value === null ? '' : String(value);
 }
 
+function getSpecialDayLabel(lunch) {
+  if (!lunch) return null;
+  const text = ['info', 'main', 'staple', 'side1', 'side2', 'side3', 'dessert']
+    .map((k) => safe(lunch[k]))
+    .join(' ');
+  const rules = [
+    { pattern: /週末|星期六|星期日|六日|休息日/, label: '🌴 週末' },
+    { pattern: /補課/, label: '🏫 補課日' },
+    { pattern: /補假/, label: '🎉 補假日' },
+    { pattern: /國定假日/, label: '🎉 國定假日' },
+    { pattern: /校慶/, label: '🎉 校慶日' },
+    { pattern: /放假|無供餐|停餐|不供餐/, label: '🏫 今日無午餐供餐' },
+  ];
+  for (const rule of rules) {
+    if (rule.pattern.test(text)) return rule.label;
+  }
+  return null;
+}
+
 async function readLunchData() {
   try {
     return JSON.parse(await readFile(LUNCH_DATA_PATH, 'utf8'));
@@ -88,18 +107,38 @@ export function formatLunchMessage(date, lunch) {
   const [y, m, d] = String(date).split('-');
   const displayDate = `${y}/${m}/${d}`;
   const weekday = getWeekdayText(date);
+  const special = getSpecialDayLabel(lunch);
 
   if (!lunch) {
     return [
-      '🍱 今日午餐',
-      '',
       `📅 ${displayDate} ${weekday}`,
       '',
-      '😢 目前還沒有今天的午餐資料。',
+      '📭 目前沒有這一天的官方午餐資料。',
       '',
-      '請稍後再試一次！',
+      '你可以：',
+      '🍱 查看今日午餐',
+      '📅 查詢其他日期',
+      '📆 查看本週午餐',
       '',
-      '👼 午餐小天使',
+      '👼 午餐小天使提醒你，官方菜單會依學校公告更新。',
+    ].join('\n');
+  }
+
+  if (special) {
+    return [
+      `📅 ${displayDate} ${weekday}`,
+      '',
+      special,
+      '',
+      `🍚 主食：${safe(lunch.staple)}`,
+      `🍖 主菜：${safe(lunch.main)}`,
+      `🥬 副菜1：${safe(lunch.side1)}`,
+      `🥬 副菜2：${safe(lunch.side2)}`,
+      `🥬 副菜3：${safe(lunch.side3)}`,
+      `🍎 水果&點心：${safe(lunch.dessert)}`,
+      '',
+      `ℹ️ ${safe(lunch.info)}`,
+      '👼 午餐小天使祝你用餐愉快！',
     ].join('\n');
   }
 
@@ -113,85 +152,135 @@ export function formatLunchMessage(date, lunch) {
     `🥬 副菜3：${safe(lunch.side3)}`,
     `🍎 水果&點心：${safe(lunch.dessert)}`,
     '',
-    `ℹ️${safe(lunch.info)}`,
+    `ℹ️ ${safe(lunch.info)}`,
     '👼 午餐小天使祝你用餐愉快！',
   ].join('\n');
 }
 
 export function formatEmptyDateMessage(date) {
+  const [y, m, d] = String(date).split('-');
+  const displayDate = `${y}/${m}/${d}`;
+  const weekday = getWeekdayText(date);
   return [
+    `📅 ${displayDate} ${weekday}`,
+    '',
     '📭 目前沒有這一天的官方午餐資料。',
     '',
-    '請確認日期，或稍後再試。',
+    '你可以：',
+    '🍱 查看今日午餐',
+    '📅 查詢其他日期',
+    '📆 查看本週午餐',
+    '',
+    '👼 午餐小天使提醒你，官方菜單會依學校公告更新。',
   ].join('\n');
 }
 
 export function formatEmptyTomorrowMessage(date) {
+  const [y, m, d] = String(date).split('-');
+  const displayDate = `${y}/${m}/${d}`;
+  const weekday = getWeekdayText(date);
   return [
+    `📅 ${displayDate} ${weekday}`,
+    '',
     '📭 目前沒有這一天的官方午餐資料。',
     '',
-    '請稍後再試，或直接查詢其他日期。',
+    '你可以：',
+    '🍱 查看今日午餐',
+    '📅 查詢其他日期',
+    '📆 查看本週午餐',
+    '',
+    '👼 午餐小天使提醒你，官方菜單會依學校公告更新。',
   ].join('\n');
 }
 
-export function formatWeekMessage(entries) {
-  if (entries.length === 0) {
-    return ['📭 目前沒有本週的官方午餐資料。', '', '👼 午餐小天使祝你用餐愉快！'].join('\n');
-  }
-
+export function formatWeekMessage(entries, weekDates = getThisWeekDates()) {
+  const SEP = '━━━━━━━━━━━━';
   const lines = ['📆 本週午餐', ''];
-  for (const { date, lunch } of entries) {
+
+  const byDate = new Map((entries || []).map((e) => [e.date, e.lunch]));
+
+  for (const date of weekDates) {
     const [, mo, d] = date.split('-');
     const weekday = getWeekdayText(date);
+    const lunch = byDate.get(date);
+
+    lines.push(SEP);
+    if (!lunch) {
+      lines.push(`📅 ${mo}/${d} ${weekday}`);
+      lines.push('📭 尚無官方資料');
+      continue;
+    }
+
+    const special = getSpecialDayLabel(lunch);
     lines.push(`📅 ${mo}/${d} ${weekday}`);
+    if (special) {
+      lines.push(special);
+      continue;
+    }
     lines.push(`🍚 主食：${safe(lunch.staple)}`);
     lines.push(`🍖 主菜：${safe(lunch.main)}`);
-    lines.push('');
   }
+
+  lines.push(SEP);
+  lines.push('');
+  lines.push('ℹ️ 詳細資訊請上馬公高中官網查詢');
   lines.push('👼 午餐小天使祝你用餐愉快！');
   return lines.join('\n');
 }
 
 export const INFO_REPLY = [
-  'ℹ️ 午餐小天使',
+  '🍱 午餐小天使使用說明',
   '',
-  '提供馬公高中官方午餐資訊查詢。',
-  '',
-  '資料來源：',
-  '馬公高中官方網站',
-  '',
-  '🍱 今日午餐',
-  '📅 明日午餐',
-  '📆 本週午餐',
-  '🔎 指定日期查詢',
-  '',
-  '👼 午餐小天使祝你用餐愉快！',
-].join('\n');
-
-export const ABOUT_REPLY = [
-  '👼 午餐小天使',
-  '',
-  '我是馬公高中午餐查詢小助手，',
-  '幫你快速查詢每日午餐資訊。',
-  '',
+  '你可以：',
   '🍱 今日午餐',
   '📅 明日午餐',
   '📆 本週午餐',
   '🔎 查詢指定日期',
   '',
-  '祝你每天都有美味午餐！',
+  '日期可以輸入：',
+  '8/12',
+  '8月12日',
+  '2026/8/12',
+  '2026-08-12',
+  '',
+  '也可以直接選擇：',
+  '昨天／今天／明天',
+  '',
+  '👼 午餐資料以馬公高中官方公告為準。',
+].join('\n');
+
+export const ABOUT_REPLY = [
+  '👼 午餐小天使',
+  '',
+  '我是專為澎湖馬公高中同學',
+  '打造的午餐查詢小助手！',
+  '',
+  '只要輸入日期，',
+  '就能快速查詢當天官方午餐菜單，',
+  '不用再翻公告或問同學～',
+  '',
+  '🍱 資料來源：',
+  '馬公高中官方公告',
+  '',
+  '📊 所有資訊以官方資料為準，',
+  '小天使不亂加料！',
+  '',
+  '🛟 在澎湖這座小島，',
+  '每天都有美味午餐等你開飯！',
+  '👼 祝你每天都有好胃口！🍚',
 ].join('\n');
 
 export const DATE_PROMPT_REPLY = [
-  '📅 請輸入要查詢的日期。',
+  '📅 請選擇或輸入日期',
   '',
-  '格式：',
+  '可以直接輸入：',
   '8/12',
   '8月12日',
-  'YYYY/MM/DD',
+  '2026/8/12',
+  '2026-08-12',
   '',
-  '例如：',
-  '8/12 或 2026/08/15',
+  '也可以輸入：',
+  '昨天／今天／明天',
   '',
   '輸入「取消」可以離開查詢模式。',
 ].join('\n');
@@ -200,11 +289,16 @@ export const DATE_FORMAT_ERROR_REPLY = [
   '⚠️ 日期格式不正確。',
   '',
   '請使用：',
-  '',
+  '8/12',
+  '8月12日',
   'YYYY/MM/DD',
+  'YYYY-MM-DD',
+  '',
+  '或輸入：',
+  '昨天／今天／明天',
   '',
   '例如：',
-  '2026/08/15',
+  '8/12 或 2026/08/15',
 ].join('\n');
 
 export async function getLunchByDate(date) {

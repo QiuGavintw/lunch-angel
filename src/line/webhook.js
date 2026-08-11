@@ -15,6 +15,7 @@ import {
 } from '../lunch/service.js';
 import {
   parseDateInputExtended,
+  resolveRelativeDate,
   setPendingDateQuery,
   clearPendingDateQuery,
   isPendingDateQuery,
@@ -42,11 +43,23 @@ const QUICK_REPLY_ITEMS = [
   },
   {
     type: 'action',
-    action: { type: 'postback', label: '🔎 查詢日期', data: 'action=date', displayText: '查詢日期' },
+    action: { type: 'postback', label: '🔎 查詢指定日期', data: 'action=date', displayText: '查詢指定日期' },
   },
   {
     type: 'action',
     action: { type: 'postback', label: 'ℹ️ 使用說明', data: 'action=info', displayText: '使用說明' },
+  },
+  {
+    type: 'action',
+    action: { type: 'postback', label: '📅 昨天', data: 'action=query&date=yesterday', displayText: '昨天' },
+  },
+  {
+    type: 'action',
+    action: { type: 'postback', label: '📅 今天', data: 'action=query&date=today', displayText: '今天' },
+  },
+  {
+    type: 'action',
+    action: { type: 'postback', label: '📅 明天', data: 'action=query&date=tomorrow', displayText: '明天' },
   },
 ];
 
@@ -103,7 +116,18 @@ function logLineReplyError(err) {
 
 async function buildReplyText(event) {
   if (event.type === 'postback') {
-    const action = parsePostbackAction(event.postback?.data);
+    const data = event.postback?.data;
+    const action = parsePostbackAction(data);
+
+    const quickDate = data ? String(data).match(/^action=query&date=(yesterday|today|tomorrow)$/) : null;
+    if (quickDate) {
+      const relativeText = quickDate[1] === 'yesterday' ? '昨天' : quickDate[1] === 'today' ? '今天' : '明天';
+      const date = resolveRelativeDate(relativeText);
+      clearPendingDateQuery(event);
+      const { date: resolvedDate, lunch } = await getLunchByDate(date);
+      return lunch ? formatLunchMessage(resolvedDate, lunch) : formatEmptyDateMessage(resolvedDate);
+    }
+
     if (!action) {
       return `${TEXT_REPLY}\n\n⚠️ 無法辨識的操作。`;
     }

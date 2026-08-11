@@ -19,6 +19,21 @@ function sourceKey(event) {
   return `${type}:${id ?? 'unknown'}`;
 }
 
+function addDaysStr(dateStr, days) {
+  const [y, m, d] = String(dateStr).split('-').map(Number);
+  const t = new Date(Date.UTC(y, m - 1, d, 12, 0, 0));
+  t.setUTCDate(t.getUTCDate() + days);
+  return t.toISOString().slice(0, 10);
+}
+
+export function resolveRelativeDate(text, today = getTodayString()) {
+  const input = String(text).trim();
+  if (input === '昨天') return addDaysStr(today, -1);
+  if (input === '今天') return today;
+  if (input === '明天') return addDaysStr(today, 1);
+  return null;
+}
+
 function resolveYear(month, day, today) {
   const [ty, tm, td] = String(today).split('-').map(Number);
 
@@ -43,6 +58,9 @@ function resolveYear(month, day, today) {
 export function parseDateInputExtended(text, { today = getTodayString() } = {}) {
   const input = String(text).trim();
   if (!input) return null;
+
+  const relative = resolveRelativeDate(input, today);
+  if (relative) return relative;
 
   let y;
   let mo;
