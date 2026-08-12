@@ -5,6 +5,7 @@ export const REQUIRED_FIELDS = [
   'side1',
   'side2',
   'side3',
+  'side4',
   'dessert',
 ];
 
@@ -31,7 +32,8 @@ function isEmptyDay(entry) {
     entry.main === '' &&
     entry.side1 === '' &&
     entry.side2 === '' &&
-    entry.side3 === ''
+    entry.side3 === '' &&
+    entry.side4 === ''
   );
 }
 
@@ -63,6 +65,8 @@ export function validateRecord(record) {
 
   for (const field of REQUIRED_FIELDS.slice(1)) {
     const value = entry[field];
+    // side4 為後來新增欄位：舊資料可能沒有，視為合法空值。
+    if (field === 'side4' && value === undefined) continue;
     if (isBadValue(value)) {
       errors.push(`${field} 為 undefined / null / [object Object]`);
     }

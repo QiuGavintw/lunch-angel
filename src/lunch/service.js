@@ -50,9 +50,32 @@ function safe(value) {
   return value === undefined || value === null ? '' : String(value);
 }
 
+/** 通用「菜色欄位」安全輸出：空值一律顯示為 `-`。 */
+export function safeDish(value) {
+  if (value === undefined || value === null) return '-';
+  const s = String(value).trim();
+  if (s === '' || s === '無' || /^-+$/.test(s)) return '-';
+  return s;
+}
+
+const DISH_LINE_FIELDS = ['staple', 'main', 'side1', 'side2', 'side3', 'side4', 'dessert'];
+
+/** 回傳一列格式化的菜色明細 line array（不含標題）。 */
+function dishLines(lunch) {
+  return [
+    `🍚 主食：${safeDish(lunch.staple)}`,
+    `🍖 主菜：${safeDish(lunch.main)}`,
+    `🥬 副菜1：${safeDish(lunch.side1)}`,
+    `🥬 副菜2：${safeDish(lunch.side2)}`,
+    `🥬 副菜3：${safeDish(lunch.side3)}`,
+    `🥬 副菜4：${safeDish(lunch.side4)}`,
+    `🍎 水果&點心：${safeDish(lunch.dessert)}`,
+  ];
+}
+
 function getSpecialDayLabel(lunch) {
   if (!lunch) return null;
-  const text = ['info', 'main', 'staple', 'side1', 'side2', 'side3', 'dessert']
+  const text = ['info', 'main', 'staple', 'side1', 'side2', 'side3', 'side4', 'dessert']
     .map((k) => safe(lunch[k]))
     .join(' ');
   const rules = [
@@ -83,7 +106,7 @@ const WEEKEND_SERVICE_HINTS = [
 
 function isSpecialWeekendLunch(lunch) {
   if (!lunch) return false;
-  const text = ['info', 'main', 'staple', 'side1', 'side2', 'side3', 'dessert']
+  const text = ['info', 'main', 'staple', 'side1', 'side2', 'side3', 'side4', 'dessert']
     .map((k) => safe(lunch[k]))
     .join(' ');
   return WEEKEND_SERVICE_HINTS.some((p) => p.test(text));
@@ -156,12 +179,7 @@ export function formatLunchMessage(date, lunch) {
       '',
       special,
       '',
-      `🍚 主食：${safe(lunch.staple)}`,
-      `🍖 主菜：${safe(lunch.main)}`,
-      `🥬 副菜1：${safe(lunch.side1)}`,
-      `🥬 副菜2：${safe(lunch.side2)}`,
-      `🥬 副菜3：${safe(lunch.side3)}`,
-      `🍎 水果&點心：${safe(lunch.dessert)}`,
+      ...dishLines(lunch),
       '',
       `ℹ️ ${safe(lunch.info)}`,
       '👼 午餐小天使祝你用餐愉快！',
@@ -171,12 +189,7 @@ export function formatLunchMessage(date, lunch) {
   return [
     `📅 ${displayDate} ${weekday}`,
     '',
-    `🍚 主食：${safe(lunch.staple)}`,
-    `🍖 主菜：${safe(lunch.main)}`,
-    `🥬 副菜1：${safe(lunch.side1)}`,
-    `🥬 副菜2：${safe(lunch.side2)}`,
-    `🥬 副菜3：${safe(lunch.side3)}`,
-    `🍎 水果&點心：${safe(lunch.dessert)}`,
+    ...dishLines(lunch),
     '',
     `ℹ️ ${safe(lunch.info)}`,
     '👼 午餐小天使祝你用餐愉快！',
@@ -241,8 +254,7 @@ export function formatWeekMessage(entries, weekDates = getThisWeekDates()) {
       if (special) {
         lines.push(special);
       }
-      lines.push(`🍚 主食：${safe(lunch.staple)}`);
-      lines.push(`🍖 主菜：${safe(lunch.main)}`);
+      lines.push(...dishLines(lunch));
       continue;
     }
 
@@ -258,8 +270,7 @@ export function formatWeekMessage(entries, weekDates = getThisWeekDates()) {
       lines.push(special);
       continue;
     }
-    lines.push(`🍚 主食：${safe(lunch.staple)}`);
-    lines.push(`🍖 主菜：${safe(lunch.main)}`);
+    lines.push(...dishLines(lunch));
   }
 
   lines.push(SEP);
