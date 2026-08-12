@@ -83,6 +83,33 @@ function parsePostbackAction(data) {
   return match ? match[1] : null;
 }
 
+function logEventArrival(events) {
+  const summary = (Array.isArray(events) ? events : [])
+    .map((event) => {
+      const type = event && typeof event.type === 'string' ? event.type : 'unknown';
+      let detail = '';
+      if (event && typeof event.postback?.data === 'string') {
+        detail = `:${event.postback.data}`;
+      }
+      return `${type}${detail}`;
+    })
+    .join(',');
+  console.log(`[webhook] events=${Array.isArray(events) ? events.length : 0} types=${summary}`);
+}
+
+function logReplyOutcome(event, error) {
+  const type = event && typeof event.type === 'string' ? event.type : 'unknown';
+  const data = typeof event?.postback?.data === 'string' ? event.postback.data : '';
+  const dataPart = data ? ` data=${data}` : '';
+  if (error) {
+    const status = typeof error.status === 'number' ? error.status : null;
+    const statusPart = status !== null ? ` status=${status}` : '';
+    console.error(`[webhook] reply failed type=${type}${dataPart}${statusPart}`);
+  } else {
+    console.log(`[webhook] reply success type=${type}${dataPart}`);
+  }
+}
+
 function logLineReplyError(err) {
   console.error('[webhook] handle event error');
 
@@ -180,7 +207,11 @@ async function buildReplyText(event) {
 }
 
 async function handleEvent(event) {
+  const eventType = event && typeof event.type === 'string' ? event.type : 'unknown';
+  const postbackData = typeof event?.postback?.data === 'string' ? event.postback.data : '';
+
   if (!event.replyToken) {
+    console.log(`[webhook] missing replyToken type=${eventType}${postbackData ? ` data=${postbackData}` : ''}`);
     return null;
   }
 
@@ -210,10 +241,18 @@ async function handleEvent(event) {
   const message = { type: 'text', text: replyText };
   message.quickReply = buildQuickReply();
 
-  return lineClient.replyMessage({
-    replyToken: event.replyToken,
-    messages: [message],
-  });
+  try {
+    await lineClient.replyMessage({
+      replyToken: event.replyToken,
+      messages: [message],
+    });
+    logReplyOutcome(event, null);
+    return true;
+  } catch (err) {
+    logReplyOutcome(event, err);
+    logLineReplyError(err);
+    throw err;
+  }
 }
 
 export function registerWebhook(app) {
@@ -231,6 +270,8 @@ export function registerWebhook(app) {
       if (!Array.isArray(events) || events.length === 0) {
         return res.status(200).json({ status: 'ok' });
       }
+
+      logEventArrival(events);
 
       await Promise.all(
         events.map((event) =>
