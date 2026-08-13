@@ -47,6 +47,10 @@ const QUICK_REPLY_ITEMS = [
   },
   {
     type: 'action',
+    action: { type: 'message', label: '🙋我要申訴', text: '我要申訴' },
+  },
+  {
+    type: 'action',
     action: { type: 'postback', label: 'ℹ️ 使用說明', data: 'action=info', displayText: '使用說明' },
   },
   {
@@ -61,11 +65,16 @@ const QUICK_REPLY_ITEMS = [
     type: 'action',
     action: { type: 'postback', label: '📅 明天', data: 'action=query&date=tomorrow', displayText: '明天' },
   },
-  {
-    type: 'action',
-    action: { type: 'message', label: '🙋我要申訴', text: '我要申訴' },
-  },
 ];
+
+function isAppealMessage(event) {
+  return (
+    event?.type === 'message' &&
+    event?.message?.type === 'text' &&
+    typeof event.message.text === 'string' &&
+    event.message.text.trim() === '我要申訴'
+  );
+}
 
 function buildQuickReply() {
   return { items: QUICK_REPLY_ITEMS };
@@ -219,6 +228,11 @@ async function handleEvent(event) {
     return null;
   }
 
+  if (isAppealMessage(event)) {
+    console.log('[webhook] 收到「我要申訴」，不主動回覆（由 LINE 官方帳號 Auto Reply 處理）');
+    return null;
+  }
+
   const lineClient = getClient();
   if (!lineClient) {
     console.error('[webhook] LINE_CHANNEL_ACCESS_TOKEN 尚未設定，無法回覆');
@@ -295,4 +309,4 @@ export function registerWebhook(app) {
   app.post('/webhook', handlers);
 }
 
-export { buildReplyText, getTodayString, getWeekdayText, getTodayLunch, getTomorrowLunch, getWeekLunch, getLunchReplyFor, formatLunchMessage, formatEmptyDateMessage, DATE_PROMPT_REPLY, DATE_FORMAT_ERROR_REPLY };
+export { buildReplyText, buildQuickReply, isAppealMessage, handleEvent, getTodayString, getWeekdayText, getTodayLunch, getTomorrowLunch, getWeekLunch, getLunchReplyFor, formatLunchMessage, formatEmptyDateMessage, DATE_PROMPT_REPLY, DATE_FORMAT_ERROR_REPLY };

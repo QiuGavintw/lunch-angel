@@ -14,7 +14,7 @@ import {
   resolveRelativeDate,
   isCancelText,
 } from '../src/lunch/dateQuery.js';
-import { buildReplyText } from '../src/line/webhook.js';
+import { buildReplyText, buildQuickReply, isAppealMessage, handleEvent } from '../src/line/webhook.js';
 import { readFile } from 'node:fs/promises';
 
 const LUNCH = JSON.parse(await readFile(new URL('../data/lunch.json', import.meta.url), 'utf8'));
@@ -69,4 +69,57 @@ test('formatLunchMessage 對有資料日期輸出正常', () => {
 
 test('formatEmptyDateMessage 維持 📭', () => {
   assert.ok(formatEmptyDateMessage('2026-06-20').includes('📭 目前沒有這一天的官方午餐資料。'));
+});
+
+test('「我要申訴」分流：Node 不 reply、不產生一般/午餐回覆、無 postback action', async () => {
+  const appeal = { type: 'message', message: { type: 'text', text: '我要申訴' }, replyToken: 'tok-appeal' };
+  assert.equal(isAppealMessage(appeal), true);
+  assert.equal(isAppealMessage({ type: 'message', message: { type: 'text', text: '  我要申訴  ' } }), true);
+  assert.equal(await handleEvent(appeal), null, 'Node 不應 replyMessage');
+  assert.equal(isAppealMessage({ type: 'postback', postback: { data: 'action=info' } }), false);
+  assert.equal(isAppealMessage({ type: 'message', message: { type: 'text', text: '我要吃飯' } }), false);
+  const payload = JSON.stringify(buildQuickReply());
+  assert.equal(payload.includes('action=appeal'), false);
+  assert.equal(payload.includes('action=start'), false);
+  assert.equal(payload.includes('action=wake'), false);
+});
+
+test('一般 message（我要吃飯）維持既有行為', async () => {
+  const reply = await buildReplyText({ type: 'message', message: { type: 'text', text: '我要吃飯' } });
+  assert.ok(reply.includes('午餐小天使'));
+});
+
+test('使用說明包含原內容與「🙋我要申訴」說明', () => {
+  assert.ok(INFO_REPLY.includes('🍱 午餐小天使使用說明'));
+  assert.ok(INFO_REPLY.includes('🔎 查詢指定日期'));
+  assert.ok(INFO_REPLY.includes('昨天／今天／明天'));
+  assert.ok(INFO_REPLY.includes('👼 午餐資料以馬公高中官方公告為準。'));
+  assert.ok(INFO_REPLY.includes('🙋我要申訴'));
+  assert.ok(INFO_REPLY.includes('問題'));
+});
+
+test('Quick Reply：9 項、「🙋我要申訴」在第 5 位、其他 8 項不變', () => {
+  const { items } = buildQuickReply();
+  assert.equal(items.length, 9);
+  assert.deepEqual(
+    items.map((i) => i.action.label),
+    ['🍱 今日午餐', '📅 明日午餐', '📆 本週午餐', '🔎 查詢指定日期', '🙋我要申訴', 'ℹ️ 使用說明', '📅 昨天', '📅 今天', '📅 明天']
+  );
+  const appeal = items[4].action;
+  assert.equal(appeal.type, 'message');
+  assert.equal(appeal.label, '🙋我要申訴');
+  assert.equal(appeal.text, '我要申訴');
+  assert.deepEqual(
+    items.map((i) => i.action).filter((a) => a.label !== '🙋我要申訴'),
+    [
+      { type: 'postback', label: '🍱 今日午餐', data: 'action=today', displayText: '今日午餐' },
+      { type: 'postback', label: '📅 明日午餐', data: 'action=tomorrow', displayText: '明日午餐' },
+      { type: 'postback', label: '📆 本週午餐', data: 'action=week', displayText: '本週午餐' },
+      { type: 'postback', label: '🔎 查詢指定日期', data: 'action=date', displayText: '查詢指定日期' },
+      { type: 'postback', label: 'ℹ️ 使用說明', data: 'action=info', displayText: '使用說明' },
+      { type: 'postback', label: '📅 昨天', data: 'action=query&date=yesterday', displayText: '昨天' },
+      { type: 'postback', label: '📅 今天', data: 'action=query&date=today', displayText: '今天' },
+      { type: 'postback', label: '📅 明天', data: 'action=query&date=tomorrow', displayText: '明天' },
+    ]
+  );
 });
