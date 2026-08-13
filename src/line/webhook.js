@@ -61,6 +61,10 @@ const QUICK_REPLY_ITEMS = [
     type: 'action',
     action: { type: 'postback', label: '📅 明天', data: 'action=query&date=tomorrow', displayText: '明天' },
   },
+  {
+    type: 'action',
+    action: { type: 'message', label: '🙋我要申訴', text: '我要申訴' },
+  },
 ];
 
 function buildQuickReply() {
