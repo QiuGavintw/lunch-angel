@@ -1,5 +1,3 @@
-import { getDocument } from 'pdfjs-dist/legacy/build/pdf.mjs';
-
 const LINE_Y_EPSILON = 2.2;
 const COL_TOLLERANCE = 55;
 const MERGE_GAP = 70;
@@ -57,24 +55,41 @@ function parseDateColumns(dateLine) {
   const items = dateLine.items;
   const columns = [];
   for (let i = 0; i < items.length; i += 1) {
-    const monthMatch = /^(\d{1,2})$/.exec(items[i].s);
-    if (!monthMatch) continue;
-    const j = i + 1;
-    const slashMatch = /^\/+/.exec(items[j]?.s || '');
-    if (!slashMatch) continue;
-    const rest = items[j].s.slice(slashMatch[0].length);
-    let dayStr = rest.match(/^\d{1,2}/)?.[0] ?? '';
-    let k = j + 1;
+    const s = items[i].s;
+    let month = null;
+    let dayStr = '';
+    let center = null;
+    let nextIdx = i + 1;
+
+    // 完整「8/31」或「8/」（月+斜線合併在同一個 token）
+    const full = /^(\d{1,2})\/(\d{1,2})?$/.exec(s);
+    if (full) {
+      month = Number(full[1]);
+      dayStr = full[2] ?? '';
+      center = items[i].x + 8;
+    } else {
+      // 純月份「8」，下一個 token 必須是「/」或「/15」
+      const monthMatch = /^(\d{1,2})$/.exec(s);
+      if (!monthMatch) continue;
+      const slash = /^(\/+)(\d{1,2})?$/.exec(items[nextIdx]?.s ?? '');
+      if (!slash) continue;
+      month = Number(monthMatch[1]);
+      dayStr = slash[2] ?? '';
+      center = items[i].x + 8;
+      nextIdx += 1;
+    }
+    if (month < 1 || month > 12) continue;
+
+    // 從後續純數字 token 補齊不足的 day 位數
+    let k = nextIdx;
     while (dayStr.length < 2 && /^\d{1,2}$/.test(items[k]?.s ?? '')) {
       dayStr += items[k].s;
       k += 1;
     }
     if (!dayStr.length) continue;
-    columns.push({
-      month: Number(monthMatch[1]),
-      day: Number(dayStr),
-      center: items[i].x + 8,
-    });
+    const day = Number(dayStr);
+    if (day < 1 || day > 31) continue;
+    columns.push({ month, day, center });
     i = k - 1;
   }
   return columns;
@@ -127,6 +142,7 @@ function buildColumnTokens(lines, dateY, centers) {
 }
 
 export async function parseMenuPdf(buffer) {
+  const { getDocument } = await import('pdfjs-dist/legacy/build/pdf.mjs');
   const doc = await getDocument({ data: toUint8(buffer) }).promise;
   const pages = [];
   try {

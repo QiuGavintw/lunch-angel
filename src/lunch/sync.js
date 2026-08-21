@@ -201,9 +201,9 @@ function menuPdfUrl(post) {
   return (
     pdfs.find((url) => {
       try {
-        return decodeURIComponent(url).includes('午餐菜單');
+        return decodeURIComponent(url).includes('菜單');
       } catch {
-        return url.includes('午餐菜單');
+        return url.includes('菜單');
       }
     }) ?? null
   );
