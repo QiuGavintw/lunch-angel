@@ -1,0 +1,1490 @@
+==================================================
+午餐小天使｜問題與解決歷程
+==================================================
+
+專案名稱：
+午餐小天使（Lunch Angel）
+
+用途：
+記錄使用者與 AI（OpenCode）在本專案開發過程中遇到的問題、
+溝通方式、分析方式、解決方式與驗證結果。
+
+--------------------------------------------------
+文件說明（請先讀這段）
+--------------------------------------------------
+
+1. 本文件是一份「問題與解決歷程紀錄」，不是 README，也不是單純的
+   technical changelog。重點是讓未來的人理解：
+   「這個專案一路是怎麼做出來的，以及使用者和 AI 是怎麼一起解決問題的。」
+
+2. 資料來源優先順序：
+   (a) Git repository 本身：git log、git show、git diff、程式碼、tests、
+       README.md、package.json、data/、docs/
+   (b) 專案內既有紀錄：docs/PHASE_10C_10F_INCIDENT_AND_SOLUTION_LOG.txt
+   (c) 本次整理時由使用者提供 / 本次對話留存之維運紀錄
+       （Render log、LINE 實測結果、session 內量測數字等）
+   凡是只有 (c) 能佐證、repository 無法重現的內容，
+   一律標示「來自維運紀錄」或「目前資料無法確認」，不會寫成已驗證事實。
+
+3. Git 快照（本文件建立時的實際狀態，以 git 指令確認）：
+     分支        = main（追蹤 origin/main）
+     HEAD        = bcbf6ed（fix: support new lunch menu PDF format）
+     origin/main = bcbf6ed（local 與 remote 一致）
+     working tree 未 commit 變更：
+       M assets/rich-menu.png   ← Phase 10F-3（圖片文字改為啟動小天使）
+       M src/line/richMenu.js   ← Phase 10F-2（啟動小天使 message action）
+       M src/server.js          ← Phase 10E（ready flag / /health 503 / startup logs）
+       ?? docs/                 ← 既有 Phase 紀錄文件（未 commit）
+     ※ 注意：Phase 10E 的 src/lunch/pdf.js lazy import 原本也是未 commit 變更，
+       後來隨 commit bcbf6ed 一併進入 git；但 server.js 的 ready flag 至今
+       仍未 commit。這是 git HEAD 與實際上線行為的一個已知差異點。
+
+4. 本文件建立時的任務約束（已遵守）：
+   只建立本文件，未修改任何程式功能、未重構、未 npm install/update、
+   未 rebuild Rich Menu、未呼叫 LINE API、未 deploy、未 commit、未 push。
+   過程中僅執行唯讀指令（git log / git show / git diff / git status /
+   讀取檔案內容），未執行會寫入任何檔案的命令。
+
+==================================================
+【第〇章】專案起源與目標
+==================================================
+
+問題：
+
+  學校（澎湖馬公高中）的午餐菜單只發布在學校官方網站，
+  學生想查「今天午餐吃什麼」必須自己開瀏覽器找公告、開 PDF。
+  目標是做一個 LINE 官方帳號聊天機器人「午餐小天使👼」，
+  讓高中生直接在 LINE 上查詢午餐。
+
+使用者如何描述：
+
+  從 README.md（首次 commit 即存在）可確認的需求範圍：
+  - LINE Messaging API Webhook 接收事件
+  - 驗證 x-line-signature 簽章
+  - 回覆文字訊息
+  以及本次對話提供之需求清單：
+  今日午餐／明日午餐／本週午餐／查詢指定日期／使用說明、
+  LINE Quick Reply、午餐資料自動同步、官方網站資料解析、
+  PDF 菜單解析、cache、scheduler、webhook、LINE Reply Message。
+
+AI 分析：
+
+  採用 Node.js + Express Backend 架構（package.json 可證：
+  express ^5.2.1、@line/bot-sdk ^11.2.0、dotenv ^17.4.2、pdfjs-dist ^5.4.296、
+  engines node >=18），逐步建立：
+    Express server → LINE webhook → lunch service → RSS 抓取 →
+    PDF parser → sync pipeline → scheduler → cache → tests → deployment。
+
+修改內容（首次 commit 813daac 全貌，git --stat 證實）：
+
+  .env.example / .gitignore / README.md / package.json / package-lock.json /
+  data/lunch.json / src/server.js / src/line/webhook.js /
+  src/lunch/{parse,pdf,rss,scheduler,sync,validator}.js
+
+相關 Commit：
+
+  813daac — chore: prepare lunch angel for deployment（2026-08-10 23:09 +0800）
+
+備註（誠實聲明）：
+
+  在 813daac 之前是否有更早的本地開發嘗試、當初使用者與 AI 的第一句對話
+  內容為何——目前資料無法確認。Git 中第一個 commit 就是 813daac，
+  本文件不捏造更早的故事。
+
+==================================================
+【第一章】LINE SDK v11 / Webhook 初期問題（問題 1）
+==================================================
+
+問題：
+
+  專案初期建立 LINE Bot 時，遇到幾類典型問題：
+  (a) LINE SDK v11 的 API 與常見舊版範例不同（client 取得方式、accessor 名稱）
+  (b) Express body parsing 與 LINE signature verification 衝突
+      ——簽章驗證需要「原始 raw body」，
+      但 express.json() 解析後 req.body 已是物件，字串不同則簽章必失敗
+  (c) webhook event（message / postback）如何分派、如何 replyMessage
+  (d) 如何在沒有真實 LINE 流量的情況下測試 webhook 邏輯
+
+使用者如何描述：
+
+  初期以「照著 LINE Bot 範例建好，但簽章驗證 / 回覆出問題」的方向提出；
+  確切的原始對話措辭目前資料無法確認。
+  但結果留在 git history：commit a82289c 的主旨就是
+  「fix: use correct sdk accessors and repair rich menu on skip」，
+  直接證明「SDK accessor 用錯」是真實發生過、且被修正過的問題。
+
+AI 分析：
+
+  - 簽章驗證：@line/bot-sdk 的 middleware 以 raw body 計算 HMAC。
+    解法是在 express.json() 加 verify callback，把原始 Buffer 存到
+    req.rawBody（src/server.js:26-32 可證此結構存在）。
+  - SDK v11：client 改由 LineBotClient.fromChannelAccessToken(...)
+    取得（src/line/webhook.js:87、src/line/richMenu.js:28 可證），
+    這正是 a82289c 修正後採用的 accessor 形式。
+  - 簽章錯誤處理：SignatureValidationFailed → HTTP 401
+    （src/server.js:59-61 可證）。
+  - 測試：把 handleEvent / buildReplyText / buildQuickReply /
+    isAppealMessage 等 export 出來，test/webhook.test.mjs 直接以
+    mock event 呼叫，不需要真 token、不打 LINE API——
+    這就是本專案的 test harness 模式。
+
+嘗試過的方法 / 失敗原因：
+
+  - 曾使用不正確的 v11 accessor（細節無法由 repository 重現，
+    僅能由 a82289c 主旨與 diff 佐證曾經錯過一次並修正）。
+  - 若不做 raw body 保存，express.json() 重新序列化的字串與 LINE 原始
+    payload 不一致，簽章必然驗證失敗（機理性問題，非猜測）。
+
+最終解決方式：
+
+  1. express.json({ verify: (req,res,buf) => { req.rawBody = buf; } })
+  2. @line/bot-sdk middleware({ channelSecret }) 作為 /webhook 前置驗證
+  3. SignatureValidationFailed → 401
+  4. handleEvent(event) 統一處理 event 分派，replyToken 缺失直接 return null
+  5. export 核心函式供 node:test 測試（mock harness）
+
+驗證方式與結果：
+
+  - test/webhook.test.mjs（現有 12 個 test）涵蓋：
+    keywords、postback（today/tomorrow/week/date/info/about）、
+    date query、quick reply、未知 postback 等。
+  - 目前整包 npm test 35/35 PASS（parse 12 + service 11 + webhook 12；
+    test 數量由三個測試檔逐一統計得證；
+    35/35 PASS 為維運紀錄中最近一次執行結果）。
+
+相關 Commit：
+
+  a82289c — fix: use correct sdk accessors and repair rich menu on skip（2026-08-11）
+  （rawBody / 401 結構屬於初始 commit 813daac 既有的設計）
+
+Deploy 狀態：
+
+  813daac 即以「prepare for deployment」為名提交；實際 Render 部署時間點
+  目前資料無法確認（部署由使用者手動於 Render Dashboard 操作，
+  repository 不留部署紀錄）。
+
+最後結果：
+
+  Webhook 簽章驗證、event 處理、replyMessage、mock 測試全部穩定運作，
+  成為之後所有功能的基礎。
+
+==================================================
+【第二章】官方資料取得與 PDF 解析（問題 2）
+==================================================
+
+問題：
+
+  午餐菜單不是結構化 API，而是學校官網公告文章裡附的 PDF 檔，
+  而且是「表格型」PDF：日期欄位在表頭，每天一格直欄，
+  內含主食／主菜／副菜1~4／點心／過敏原等多列。
+  要把這種 PDF 變成「2026-06-15 吃什麼」的 JSON，不能只靠文字搜尋。
+
+使用者如何描述：
+
+  需求方向為「自動從馬公高中官網抓午餐、解析 PDF 菜單、存起來給 bot 查」；
+  原始對話措辭目前資料無法確認，但整條 pipeline 已完整存在於 code。
+
+AI 分析——為什麼不能只靠單純的文字搜尋：
+
+  這是本章最重要的設計判斷。理由如下：
+  1. pdf.js getTextContent() 吐出的是「一堆帶座標的文字 token」，
+     不是有列欄概念的表格。純文字串接後，「6」「/」「15」可能被拆成
+     多個 token，菜色也會交錯，無法知道哪道菜屬於哪一天。
+  2. 因此 pdf.js 的做法是「座標驅動」而非「文字搜尋驅動」：
+     - clusterLines()：以 y 座標（epsilon 2.2px）把 token 聚成視覺行
+     - findDateLine()：找到「日期 6/15 …」那一天的表頭行
+     - parseDateColumns()：從表頭行解析出每個日期欄的 x 中心點
+     - buildColumnTokens()：所有 y < dateY 的 token 依 x 中心點分配到
+       所屬日期欄（容差 COL_TOLLERANCE=55、合併 MERGE_GAP=70）
+     - extractAdYear()：抓「115年」並轉西元（+1911）
+     - findAllergenY()：定位過敏原列，避免把過敏原符號誤當菜名
+     （以上皆可在 src/lunch/pdf.js 直接讀到）
+  3. 就算解析成功，也不能直接相信：validator.js validateRecord()
+     逐日驗證欄位合理性；sync.js integrityCheck() 再以
+     「日期範圍天數 vs 實際解析天數」的覆蓋率做整份文件完整性檢查
+     （例如 span>=4 天但只解析出 <35% → 判為異常，sync.js:273-294 可證）。
+
+最終架構（sync pipeline，src/lunch/sync.js 可證）：
+
+  RSS 抓取（rss.js fetchLunchFeed）
+    → 過濾 title 含「菜單」的公告
+    → menuPdfUrl() 找出公告內官方網域的 PDF URL
+       （OFFICIAL_HOSTS 白名單：www.mksh.phc.edu.tw / mksh.phc.edu.tw）
+    → downloadPdf()：15 秒 timeout、Content-Type 檢查、
+       前 5 bytes 必須是 '%PDF-' magic check
+    → parseMenuPdf()（pdf.js）→ buildEntriesFromPdf()（parse.js）
+    → validateRecord() 逐日驗證 → integrityCheck() 整份驗證
+    → merge 進 cache → safeWriteJson() 原子寫入 data/lunch.json
+  若公告沒有 PDF → fallback 到純文字 buildEntryFromText()
+
+  另外有一個明確的防呆設計 ParserUnsupportedError：
+  解析出 0 天時丟 BLOCKER，reportBlocker() 印出
+  「先抓取此 PDF 檢查新版格式，再擴充 parser，勿猜測。」
+  ——這句話正是後來 2026-08-21 新格式事件的指導原則（見第十章）。
+
+驗證方式與結果：
+
+  - test/parse.test.mjs 以真實官方 PDF（June 格式）跑 parseMenuPdf，
+    驗證 10 天、四副菜、dessert 保留等（現有 12 個 test）。
+  - data/lunch.json（git 追蹤）實際含 2026-05-29 ~ 2026-08-11 資料，
+    證明 pipeline 端到端成功過。
+
+相關 Commit：
+
+  813daac — 建立 rss/sync/pdf/parse/validator 全套
+  882fdd4 — fix: support four lunch sides and improve pdf parsing（2026-08-12）
+             （副菜支援 1→4 道、safeDish、integrityCheck、+282 行測試）
+
+Deploy 狀態：
+
+  已隨各階段部署至 production（手動部署；確切時間無法由 repository 確認）。
+
+最後結果：
+
+  官網 → PDF → 結構化 JSON 的完整 pipeline 穩定運作，
+  並且具備「解析失敗就整份擋下、絕不覆蓋舊資料」的安全特性。
+
+==================================================
+【第三章】每日同步、scheduler 與 cache 保護（問題 3）
+==================================================
+
+問題：
+
+  官方網站隨時可能更新菜單；bot 又必須秒回查詢。
+  如何兼顧「每日自動同步」與「絕不讓錯誤資料覆蓋既有正確資料」？
+
+AI 分析與最終設計（全部可由 code 證實）：
+
+  1. scheduler（src/lunch/scheduler.js）：
+     - 每日 05:00 Asia/Taipei 觸發。
+       不是固定 setInterval(24h)，而是 nextRunDelayMs() 用 Intl timezone
+       換算到下一個 05:00 的精確延遲，不受 Server 本機時區影響。
+     - 失敗重試 MAX_ATTEMPTS=3 次，BACKOFF_MS=3000ms，
+       且單次失敗不會停止 scheduler，隔日照排（fire → scheduleNext）。
+  2. startup sync：
+     startLunchScheduler() 時若 meta.lastSuccessDate != 今天（Asia/Taipei），
+     先跑一次非強制同步（runStartupIfTodayPending）。
+     並刻意設計為非 await 的 background task：webhook readiness 不等它完成。
+  3. 同步鎖（data/lunch-sync.lock，gitignored）：
+     flag: 'wx' 建立 lock；EEXIST 時檢查 lock owner pid 是否存活
+     （process.kill(pid,0)；ESRCH → stale → 安全移除重建；
+      Windows／權限等無法確認的情況採 fail-safe：視為仍在執行、不刪 lock）。
+  4. cache 更新保護（多層防線）：
+     a. 任何一步失敗（RSS 抓取失敗 / RSS 空 / 找不到菜單公告 /
+        下載失敗 / parser 解析 0 天 / validation 失敗 / integrityCheck 失敗）
+        → failSync()，data/lunch.json 完全不被碰觸
+        （sync.js 各分支 console.error 明寫「已保留現有 data/lunch.json」）。
+     b. integrityCheck 覆蓋率異常或 ParserUnsupportedError
+        → 標記 BLOCKER，break 掉整輪，「保留全部舊資料，不做 partial update」。
+     c. 寫入本身是原子操作 safeWriteJson()：先寫 ${file}.tmp 再 rename，
+        期間任何失敗都不會破壞現有資料。
+     d. merge 語法只覆蓋「本份文件解析出的日期」，
+        其他既有日期原封不動保留（sync.js:473-480 可證）。
+     e. metadata（data/official-sync.json，gitignored）記錄
+        lastDocumentId / lastDocumentHash；同一份文件未變就 skip，
+        不重複抓取與覆蓋。
+  5. DATA_DIR 環境變數：
+     未設定 → 用專案內 data/（本機開發不變）；
+     有設定（如 Render Persistent Disk 掛載路徑）→ 使用該路徑。
+     ——這個機制當時就已做好，但 production 實際上沒有掛 Persistent Disk，
+     後來因此踩到 ephemeral storage 問題（見第十二章）。
+
+驗證方式與結果：
+
+  - sync 內建 FORCE_PDF_FAIL / FORCE_VALIDATE_FAIL / FORCE_RSS_FAIL
+    三個測試 hook（正常執行不觸發），可用於演練各種失敗路徑。
+  - data/lunch-sync.lock 實際存在於本機 data/，lock 機制實際運作過。
+
+相關 Commit：
+
+  813daac — scheduler/sync/cache 全套建立
+  74d9ac7 — feat: hide regular weekends from weekly lunch menu（2026-08-11）
+            （本週菜單忽略無特殊供餐的一般週末；補課/補假/國定假日/
+              校慶/特殊供餐提示的週末仍顯示）
+
+Deploy 狀態：
+
+  已部署（手動）；production scheduler 於 Render log 可見
+  （來自維運紀錄：build PASS / health PASS / scheduler PASS / startup sync PASS）。
+
+最後結果：
+
+  每天 05:00 Asia/Taipei 自動同步 + 失敗重試 + 多層 cache 保護，
+  至今沒有發生過「壞資料覆蓋好資料」事故。
+
+==================================================
+【第四章】Quick Reply 與查詢功能演進（2026-08-11 上半天）
+==================================================
+
+背景：
+
+  基礎系統可用後，開始把「查詢體驗」做起來。
+  這一天的 commit 密集且連續，反映使用者與 AI 來回迭代很快。
+
+問題與解決（依時間序）：
+
+  1. 使用者希望不用打字就能查午餐 → Quick Reply。
+     Commit 7a4dc62「feat: add lunch quick replies and date queries」
+     （webhook.js 大改 + service.js +242 行）：
+     建立 QUICK_REPLY_ITEMS、LUNCH_KEYWORDS（今日午餐/今天午餐/午餐）、
+     postback 分派（action=today/tomorrow/week/date/info）、日期查詢。
+
+  2. 發現只有部分回覆有 Quick Reply → 應該「每一則回覆」都帶。
+     Commit 5691941「feat: keep quick replies on every response」：
+     把 buildQuickReply() 統一附加到 message.quickReply，
+     不再遺漏（webhook.js handleEvent 結尾統一附加，可證）。
+
+  3. 使用者想查「指定日期」→ 互動式日期查詢。
+     Commit ad2e6f0「feat: add interactive date lunch queries」：
+     新增 src/lunch/dateQuery.js（+106 行）、pending 狀態、
+     「昨天/今天/明天」quick postback、取消機制。
+
+  4. UX 再打磨。
+     Commit 17a40ad「feat: improve lunch angel menu and date query UX」：
+     service.js +166/-41 行的整理（格式化訊息、空資料 📭 訊息等）。
+
+驗證方式：
+
+  test/webhook.test.mjs 的 keywords / postback / date query / quick reply
+  測試即來自這個階段的需求，之後持續作為 regression 防線。
+
+最後結果：
+
+  今日／明日／本週／指定日期／昨天今天明天 全部可用，
+  且所有回覆都固定帶 Quick Reply。
+
+==================================================
+【第五章】Rich Menu 建立（Phase 10F-1，2026-08-11 下半天）
+==================================================
+
+問題：
+
+  只有聊天室下方的 Quick Reply 不夠直覺，
+  使用者希望打開聊天室就有一張大按鍵圖（LINE Rich Menu）。
+
+嘗試過的方法 / 失敗過的地方：
+
+  1. b225a75「feat: add lunch angel rich menu」：
+     新增 src/line/richMenu.js（197 行）、assets/rich-menu.png（1090661 bytes）
+     ——第一版圖片很大（>1MB），後來被換掉。
+
+  2. 第一次 rebuild 就踩到 SDK accessor 問題（同第一章），
+     另外還遇到「skip 時也要能修復」的情境——
+     a82289c 主旨明寫「repair rich menu on skip」：
+     若 LINE 上已存在同名 Rich Menu，流程要能刪除重建而不是卡死
+     （richMenu.js 的 rebuild 流程：getExistingRichMenu → deleteRichMenu →
+      createRichMenu → uploadRichMenuImage → setDefaultRichMenu →
+      writeRichMenuMetadata，可由 code 讀到完整順序）。
+
+  3. 圖片反覆重製三輪（git 可證的 bytes 變化）：
+       b225a75：1090661 bytes（初版）
+       a82289c：157892 bytes
+       17a40ad：448044 bytes
+       91605a6：286861 bytes（fix: improve rich menu visual layout and actions）
+     每一輪都是視覺排版或按鍵動作需要調整。
+
+最終規格（richMenu.js 可證）：
+
+  - 尺寸 2500×1686（RICH_MENU_WIDTH / RICH_MENU_HEIGHT）
+  - 6 個 area（3×2 格）：
+    今日午餐｜明日午餐｜本週午餐
+    查詢指定日期｜使用說明｜(右下角按鍵，見第七章)
+  - chatBarText = 🍱 午餐小天使
+  - 預設顯示（selected: true）
+
+驗證方式：
+
+  richMenu.js 內建 logRichMenuError()：LINE API 錯誤時印 status /
+  statusText / parsed message，方便診斷；metadata 寫入
+  data/rich-menu.json（gitignored）作為 source of truth 紀錄。
+
+相關 Commit：
+
+  b225a75 / a82289c / 17a40ad / 91605a6
+
+最後結果：
+
+  Rich Menu 上線（live richMenuId = richmenu-f9bfea772a49b912472038b871c83157，
+  記錄於 gitignored metadata，屬維運紀錄），成為主要操作入口。
+
+==================================================
+【第六章】Phase 10C — 四副菜資料與 PDF 解析強化（2026-08-12）
+==================================================
+
+問題：
+
+  實際官方 PDF 中，有些日子有 4 道副菜，但 parser 只支援到 3 道；
+  另外出現 dessert 欄位誤判（真的有點心的日子被清成空、
+  沒點心的日子卻殘留值）等解析不穩定問題。
+
+使用者如何描述：
+
+  以「實際菜單顯示缺欄位／多出奇怪的『水果&點心：菜』這種內容」
+  方向回報（維運記憶）；確切措辭目前資料無法確認，
+  但測試檔留下直接證據：
+  test/service.test.mjs 有 test 名稱明寫
+  「絕不出現 水果&點心：菜」「dessert 真的有資料，不得被 - 覆蓋」。
+
+AI 分析：
+
+  - service.js 定義 DISH_LINE_FIELDS =
+    ['staple','main','side1','side2','side3','side4','dessert']，
+    dishLines() 直接輸出副菜1~副菜4。
+  - safeDish() 把 undefined/null/empty/'無'/'-' 全正規化為 '-'，
+    保證輸出永遠整齊且不 crash（含舊資料沒有 side4 欄位的相容性）。
+  - parse.js 由 PDF pages 建立每日 entry 時修正 dessert 判斷；
+    validator.js 同步放寬/校正欄位驗證。
+  - pdf.js 強化 clusterLines / findDateLine / parseDateColumns /
+    buildColumnTokens / extractAdYear / findAllergenY 座標邏輯。
+
+修改內容（882fdd4 diff --stat 可證，共 8 檔 +379/-35）：
+
+  data/lunch.json、package.json、src/lunch/{parse,service,validator}.js、
+  test/{parse,service,webhook}.test.mjs
+
+驗證方式與結果：
+
+  新增大量測試：parse.test +79 行、service.test +131 行、webhook.test +72 行；
+  針對真實 PDF 的 2026-06-15/16/17/22/23 各日逐一鎖定欄位值。
+  npm test 全數 PASS（當時 30/30，之後累積至 35/35）。
+
+相關 Commit：
+
+  882fdd4 — fix: support four lunch sides and improve pdf parsing
+  74d9ac7 — feat: hide regular weekends from weekly lunch menu（同期）
+
+Deploy 狀態：
+
+  已部署；data/lunch.json 由 git 追蹤，內容含 2026-06 ~ 2026-08 資料，
+  後續所有 Phase 都建立在這個穩定基礎上。
+
+==================================================
+【第七章】Phase 10D — 冷啟動首次無回覆診斷（2026-08-12）
+==================================================
+
+問題（使用者觀察到的現象）：
+
+  Render 冷啟動（瀏覽器久沒開／容器剛醒）後，
+  第一次從 Rich Menu 點擊常常沒有任何回覆；
+  webhook log 也沒有立即出現 event arrival；
+  等一段時間再點才成功（某次約數分鐘後才見 arrival，
+  另一次重啟後約 35 秒成功）。以上為維運紀錄。
+
+使用者如何描述：
+
+  「為什麼第一次點都不會回，等一下再點就好了？」的方向。
+
+AI 分析（嚴格區分事實與推論——沿用既有紀錄的方法論）：
+
+  已確認的事實（repository 可證）：
+  1. registerWebhook(app) 在 app.listen() 之前呼叫 → 沒有 route 註冊 race。
+  2. startLunchScheduler() 在 listen callback 才啟動。
+  3. startup sync 是非 await 的 background task，不阻塞 listen。
+  4. （當時）/health 在 listen 後立即回 200，沒有 ready flag。
+  5. 當時 pdf.js 在 module 頂層 static import pdfjs-dist，
+     所以 scheduler → sync → pdf.js 形成一條 eager import chain，
+     冷啟動時要一起載入。
+  6. getTextContent() 是 CPU-bound 的同步大量計算。
+
+  強烈推論（非直接量測）：
+  - eager import chain 是冷啟動成本之一。
+  - PDF 解析可能短暫佔住 event loop，使同時刻抵達的 webhook 延遲。
+
+  無法由 repository 驗證（僅維運量測紀錄）：
+  - fresh process import 時間數字（express 約 540ms、@line/bot-sdk 約 596ms、
+    scheduler→sync 約 640ms、總計約 1.86 秒）。
+  - Render Free container 對啟動期間抵達 request 的處理方式
+    （queue / drop / retry 屬平台層機制，無法從 code 證明）。
+
+嘗試過的方法：
+
+  先加觀測、再談修復——Commit 2f4ed74
+  「feat: add webhook diagnostic logging」（webhook.js +45 行）：
+  logEventArrival / logReplyOutcome / logLineReplyError 三組日誌，
+  讓每次 event 抵達、reply 成敗、LINE API 錯誤都有跡可循。
+
+失敗原因（當下的限制）：
+
+  只加 logging 當然不會讓冷啟動變快；它的價值是「定位問題」，不是解藥。
+  真正的結構性改善放在 Phase 10E（下一章）。
+
+相關 Commit：
+
+  2f4ed74 — feat: add webhook diagnostic logging
+
+最後結果：
+
+  觀測到位後，確定了改善方向：
+  (a) readiness 要誠實（/health 不能在 bootstrap 前就回 200）
+  (b) 重模組要 lazy load。兩者都在 10E 落實。
+
+==================================================
+【第八章】Phase 10E — Readiness + Lazy PDF Import（問題 4）
+==================================================
+
+問題：
+
+  /health 在 Node 還沒完成 bootstrap 時就可能回 200，
+  health status 無法真正代表 application readiness；
+  加上 pdfjs-dist 被 eager import，冷啟動成本高。
+
+AI 分析：
+
+  Render 的 Health Check 打 /health；
+  如果 /health 太早回 200，平台會以為服務好了，
+  但此時 webhook handler 可能還在載入依賴 → 使用者第一次點擊無回覆。
+  另外 pdfjs-dist 只在 sync 時需要，不需要在 server 啟動時就載入。
+
+修改內容：
+
+  src/server.js：
+  1. let ready = false
+  2. listen callback 內 markReady() 才轉 true（listen 之後才算 ready）
+  3. /health：ready=false → 503 {"status":"starting"}；
+     ready=true → 200 {"status":"ok","ready":true}
+  4. STARTUP_T0 / startupElapsedMs() startup timing logs：
+     [startup] static imports completed / server listen ready (+Xms) /
+     application ready (+Xms) / lunch scheduler started (+Xms)
+  5. LUNCHANGEL_STARTUP_READY_DELAY_MS 測試 hook（預設 0，
+     生產路徑完全不受影響；>0 時用 setTimeout 模擬慢 bootstrap，
+     用來驗證 503→200 行為）
+
+  src/lunch/pdf.js：
+  6. pdfjs-dist 從 module 頂層 static import 改為 parseMenuPdf()
+     函式內 const { getDocument } = await import('pdfjs-dist/...')
+     ——scheduler/sync 的冷啟動 import chain 從此不含 pdfjs。
+
+  架構原則（重要）：
+  7. lunch sync 不是 webhook readiness 的 prerequisite。
+     server ready 即可接 webhook；background sync 慢慢跑。
+
+為什麼需要這些修改（一句話版）：
+
+  讓「健康檢查通過」與「真的能處理 webhook」畫上等號，
+  並把最重的依賴移出啟動路徑。
+
+如何驗證 regression：
+
+  - /health pre-ready 503 PASS、ready 後 200 PASS、
+    unsigned webhook 401 PASS、payload regression PASS
+    （session 手動驗證紀錄；test/ 沒有 server 測試檔，
+     這些無法由 repository 重現，如實標註）。
+  - real PDF parsing PASS：npm test 中 parse/service 測試全數通過
+    （lazy import 後 parser 功能不變）。
+  - lazy scheduler import chain 約 200ms → 24~27ms
+    （❌ 無法由 repository 驗證：無基準測試程式，屬 session 量測）。
+  - 目前整包 35/35 PASS（含後續新增測試）。
+
+限制（誠實面）：
+
+  Render container 在 Node 啟動之前的 cold start 屬平台層，
+  這些程式碼不可能完全消除；PDF getTextContent() 的短暫 CPU blocking 仍在。
+  10E 的目標是 Node application readiness，不是宣稱消滅 cold start。
+
+相關 Commit / Deploy 狀態（重要細節）：
+
+  - 當下（10F 期間）server.js 與 pdf.js 都是 working-tree 未 commit 變更。
+  - pdf.js 的 lazy import 後來隨 bcbf6ed（2026-08-21）進入 git；
+    server.js 的 ready flag 至今仍未 commit。
+  - production 實際跑的是包含 10E 行為的版本
+    （Render log 出現 [startup] timing logs，屬維運紀錄），
+    但若只看 git HEAD 會看不到 ready flag——這是已知差異點，
+    未來應補 commit（不在本次任務範圍）。
+
+==================================================
+【第九章】Phase 10F-2 ～ 10F-4 — Rich Menu「關於」→「啟動」（問題 5）
+==================================================
+
+需求演變：
+
+  原本右下角按鍵：「關於小天使」（action=about postback）
+  後來需求改成：「啟動小天使」
+
+使用者如何描述（本次對話提供之重要脈絡）：
+
+  這次改動有非常明確的約束條件，不是「重畫一張圖就好」：
+  - 圖片 assets/rich-menu.png 必須修改，而且只能修改「關」「於」
+    兩字所在的區域
+  - 「小天使」三個字的像素完全不能被修改
+  - 字型必須使用 Microsoft JhengHei（微軟正黑體），與原圖一致
+  - 工具使用 @napi-rs/canvas 做 pixel-level 操作
+  - 必須進行 pixel-level verification
+  - 不使用 PowerShell hashtable argument binding
+    （PowerShell 把複雜物件當參數傳遞時 binding 行為不可靠，
+     改採獨立腳本檔案執行——這是之前踩過的坑，屬維運紀錄）
+  - 在 rebuild 之前不能影響 LINE 線上的 Rich Menu
+  - rebuild 前後要比較 remote image
+
+為什麼不能直接重新產生整張圖片？（核心思考）：
+
+  1. 整張重產 = 所有像素都可能變（抗鋸齒、座標取整、字型渲染差異），
+     就算肉眼看起來一樣，「pixel-level 完全不變」就無法保證。
+  2. 需求明確要求只有「關」「於」→「啟」「動」的區域可以變。
+     唯一能證明的方式是：修改前先 snapshot，修改後逐像素比對，
+     證明編輯矩形之外 diff = 0、「小天使」區域 diff = 0。
+  3. 這也是之後 10F-5 rebuild 能夠安全執行的前提：
+     local 圖片與 remote 圖片 byte-identical 才敢動線上。
+
+修改內容：
+
+  src/line/richMenu.js（working tree 至今未 commit，git diff 可證）：
+  - 第 6 個 area：label 關於小天使→啟動小天使、action 'about'→'message'
+  - buildRichMenuRequest() 新增分支：action==='message' 時輸出
+    { type:'message', label, text }（text='啟動小天使'），
+    其餘五鍵維持 postback action=...
+  - 明確不使用 action=start / action=wake / action=appeal
+    （test/webhook.test.mjs 有 assert 快速回選單 payload 不含這些 action）
+
+  assets/rich-menu.png（working tree，286861 → 317533 bytes）：
+  - PNG IHDR 仍為 2500×1686（可由 PNG header 驗證）
+  - 僅編輯矩形內容改變
+
+Phase 10F-3 pixel-level verification（維運紀錄；腳本在 repository 之外，
+❌ 無法由 repository 重現，但結果如下）：
+  - 只有指定編輯矩形發生變化
+  - 「小天使」區域 pixel diff = 0（未動）
+  - 編輯區外 diff = 0
+  - 新「啟」「動」glyph 存在
+  - 舊「關」「於」殘留 = 0
+
+Phase 10F-4 — READ-ONLY 完整一致性驗證：
+
+  在碰任何 LINE API 之前，先做純本機檢查（不呼叫 API）：
+  1. RICH_MENU_AREAS source of truth 正確（第 6 鍵=啟動小天使/message）
+  2. 使用說明仍為 postback action=info
+  3. 其他五鍵與 git HEAD 相同（git diff 僅第 6 鍵變更）
+  4. webhook 申訴分流與 Rich Menu 修改互相獨立（不同檔案、不同 commit）
+  5. 10E regression 仍在 working tree、npm test 30/30 PASS（當時）
+  6. git scope 乾淨：僅 4 個 modified、無 untracked、無 stash
+  為什麼要先 READ-ONLY？
+  因為一旦 rebuild 就會動到 live 使用者看到的介面；
+  本機沒驗乾淨就動線上，出錯的復原成本遠高於多花幾分鐘檢查。
+
+相關 Commit / Deploy 狀態：
+
+  此三章皆尚未 commit（至今 richMenu.js 與 png 仍在 working tree）；
+  當下未呼叫 LINE API、未 rebuild、未 deploy。
+
+==================================================
+【第十章】Phase 10F-5 — Rich Menu Rebuild（問題 6）
+==================================================
+
+問題：
+
+  source code 與圖片都改好了，但 LINE 平台上的 Rich Menu 還是舊的。
+  Rich Menu 不是 push 就會更新——必須在 LINE 上刪除重建。
+
+執行前的準備：
+
+  Phase 10F-4 的 READ-ONLY verification 全數通過才動手。
+  rebuild 前先對 remote image 做 snapshot，之後比對 byte 與 pixel。
+
+執行方式（維運紀錄）：
+
+  node -r dotenv/config src/line/richMenu.js rebuild
+
+  rebuildRichMenu() 流程（richMenu.js 可證）：
+    getExistingRichMenu → deleteRichMenu → createRichMenu →
+    uploadRichMenuImage → setDefaultRichMenu → writeRichMenuMetadata
+
+結果（data/rich-menu.json metadata，gitignored）：
+
+  richMenuId = richmenu-f9bfea772a49b912472038b871c83157
+  name       = lunch-angel-main
+  status     = active
+  updatedAt  = 2026-08-12T15:23:16.520Z
+
+live 驗證結果（需呼叫 LINE API；屬維運紀錄，❌ 無法由 repository 重現）：
+
+  - live Rich Menu exists、size = 2500×1686、areas = 6
+  - 「啟動小天使」= message、「使用說明」= postback action=info
+  - 其他五鍵一致
+  - remote image 與 local image byte-identical
+  - remote pixel diff = 0
+
+結論：READY FOR MANUAL LINE TEST → 使用者實機確認正常（維運紀錄）。
+
+source of truth 原則：
+
+  Rich Menu 的定義以 src/line/richMenu.js（RICH_MENU_AREAS）為唯一依據，
+  不要直接在 LINE Console 手改；圖片以 assets/rich-menu.png 為唯一依據，
+  兩者必須同步修改。metadata 只是「上次 rebuild 結果」的紀錄。
+
+==================================================
+【第十一章】Phase 10F-6 ～ 10F-8 — 「我要申訴」完整歷程（問題 7/8/9/10/11）
+==================================================
+
+這是一條橫跨五個小階段的故事線，也是本專案最有教育價值的一段。
+
+──────────────────────────────────────────────
+Phase 10F-6：Quick Reply 新增「🙋我要申訴」→ LINE 上看不到（問題 7）
+──────────────────────────────────────────────
+
+需求：
+
+  新增 Quick Reply「🙋我要申訴」，點擊後送出文字「我要申訴」。
+
+使用者如何描述：
+
+  「我本機看 code 已經有 9 個 Quick Reply 了，
+    為什麼 LINE 實際上只看得到 8 個？」
+
+AI 分析（READ-ONLY diagnosis 的典範）：
+
+  AI 先做唯讀診斷，不急著改任何東西：
+  1. 比較 local source：QUICK_REPLY_ITEMS 有 9 項（含新申訴項）
+  2. 比較 git HEAD：HEAD 只有 8 項——第 9 項只存在 working tree
+  3. 比較 production：production 部署的是 git HEAD（甚至更舊）
+  結論：不是 Quick Reply payload 上限問題、不是 label 太長被 LINE 濾掉，
+        而是 deployment stale——程式根本還沒上線。
+
+失敗 / 阻塞的地方：
+
+  - 本機環境沒有 Render CLI、沒有 API key、沒有 deploy hook，
+    無法從 command line 觸發部署（Render CLI 不存在於環境中）。
+  - 解法：由使用者手動到 Render Dashboard 操作部署。
+
+最終解決方式與驗證：
+
+  commit 0888a3f「feat: add appeal quick reply」（+4 行，僅 webhook.js）
+  → push main → 使用者手動 Render deploy → LINE 實機測試出現第 9 個。
+
+教訓（寫進維運注意事項）：
+
+  「local source 正確」不等於「production 正確」。
+  改 Quick Reply 後必須走完 commit → push → deploy 才算數；
+  診斷線上問題時，第一步永遠是比較 local / git HEAD / production 三方。
+
+──────────────────────────────────────────────
+Phase 10F-7：「我要申訴」不應觸發午餐小天使一般回覆（問題 8）
+──────────────────────────────────────────────
+
+問題：
+
+  點擊「🙋我要申訴」後，LINE 送出文字「我要申訴」，
+  Node webhook 把它當成一般 message 處理，
+  回了「👼 你好！我是午餐小天使～……」。
+  但需求是：申訴要交給 LINE 官方帳號 Console 的 Auto Reply 接手
+  （Auto Reply 導向 Google Form 表單；該設定在 LINE Console，
+   非 repository 內容，無法由 repository 驗證）。
+
+AI 分析（責任分離設計）：
+
+  Node webhook 與 LINE Auto Reply 是兩套系統：
+  - 一般查詢 → Node replyMessage
+  - 「我要申訴」→ Node 完全沉默（HTTP 仍回 200 ok），Auto Reply 接手
+  實作上就是在 handleEvent 最前面加一個 early return，
+  在 getClient() / replyMessage / 午餐查詢之前就攔截。
+
+修改內容（commit bd5b0b1，webhook.js 可證）：
+
+  1. isAppealMessage(event)：event.type==='message' 且 message.type==='text'
+     且 text.trim()==='我要申訴' 時 true
+  2. handleEvent() 在取得 client 之前：
+     if (isAppealMessage(event)) {
+       console.log('[webhook] 收到「我要申訴」，不主動回覆（由 LINE 官方帳號 Auto Reply 處理）');
+       return null;   // 不呼叫 replyMessage、不執行午餐查詢
+     }
+  3. HTTP webhook 仍正常完成 200 {"status":"ok"}
+  4. 刻意「不新增 action=appeal/start/wake」這類 postback action——
+     申訴就是純 message 文字分流，避免多一套狀態
+     （test/webhook.test.mjs assert 快速回選單 payload 不含這些 action）
+
+為什麼用早退而不是新 handler？
+
+  「我要申訴」不需要查資料、不需要組訊息、需要的是「什麼都不做」。
+  在分派最前面攔掉，是最小、最不容易破壞既有行為的做法；
+  也讓「Node 不管申訴內容」這個責任邊界一目了然。
+
+──────────────────────────────────────────────
+Quick Reply 順序調整（問題 9）
+──────────────────────────────────────────────
+
+需求：
+
+  「🙋我要申訴」不要排在最後，要排第 5 個。
+
+最終順序（src/line/webhook.js QUICK_REPLY_ITEMS 可證）：
+
+  1. 🍱 今日午餐
+  2. 📅 明日午餐
+  3. 📆 本週午餐
+  4. 🔎 查詢指定日期
+  5. 🙋我要申訴      ← type=message, text=我要申訴
+  6. ℹ️ 使用說明
+  7. 📅 昨天
+  8. 📅 今天
+  9. 📅 明天
+
+如何用 regression test 鎖定（test/webhook.test.mjs 可證）：
+
+  test 名稱明寫：
+  「Quick Reply：9 項、「🙋我要申訴」在第 5 位、其他 8 項不變」
+  ——assert count === 9、items[4].action.label 含 我要申訴、
+     其餘 8 項的 label/data 逐一比對不變。
+
+──────────────────────────────────────────────
+「使用說明」加入申訴提示（問題 10）
+──────────────────────────────────────────────
+
+問題：
+
+  使用者可能不知道有申訴管道。要不要另外建一個 handler／訊息？
+
+決策：不另外建 handler。
+
+  理由：
+  1. 「使用說明」（INFO_REPLY，postback action=info）本來就是使用者
+     學習功能的地方，提示放這裡觸達率最高、零新增流程。
+  2. 申訴的入口已經存在（Quick Reply 第 5 鍵），不需要第二個入口，
+     只需要讓使用者知道它的存在。
+  3. 少一個 handler = 少一條要維護的分支與測試。
+
+修改內容（commit bd5b0b1，src/lunch/service.js +2 行可證）：
+
+  INFO_REPLY 增加：
+  「如果使用過程中遇到問題，可以點選下方 Quick Reply 的「🙋我要申訴」進行問題回報。」
+  （service.js:301 可證）
+
+  對應 regression test：
+  「使用說明包含原內容與「🙋我要申訴」說明」
+
+──────────────────────────────────────────────
+Phase 10F-8：Commit → Push → Deploy → 實機測試（問題 11）
+──────────────────────────────────────────────
+
+四個階段嚴格分開，不能混為一談：
+
+  1. COMMIT
+     commit bd5b0b1「feat: refine appeal flow」
+     只 stage 3 個檔案（git show --stat 可證）：
+       src/line/webhook.js   （QR 移位 + isAppealMessage 早退 + exports）
+       src/lunch/service.js  （INFO_REPLY +1 行提示）
+       test/webhook.test.mjs （+55/-1：4 個新 test）
+     為什麼只 stage 3 個？因為 working tree 同時還躺著
+     10E（server.js/pdf.js）與 10F-2/3（Rich Menu）的變更，
+     那些屬於其他 Phase，混在一起 commit 會讓歷史無法追溯。
+  2. PUSH
+     main → origin/main；push 後 local HEAD === origin/main === bd5b0b1。
+  3. DEPLOY
+     Render 手動部署（使用者操作；本機無 Render CLI）。
+     deployment 狀態以 Render Dashboard 為準。
+  4. REAL LINE TEST
+     使用者在實際 LINE 上驗證（維運紀錄，repository 無法重現）。
+
+Phase 10F-7/8 驗證方式與結果：
+
+  npm test → 30/30 PASS（當時；現整包 35/35）。
+  新增 4 個 test：
+    - 「我要申訴」分流：Node 不 reply、不產生一般/午餐回覆、無 postback action
+    - 一般 message（我要吃飯）維持既有行為
+    - 使用說明包含原內容與「🙋我要申訴」說明
+    - Quick Reply：9 項、第 5 位、其他 8 項不變
+
+最終 LINE 實測結果（使用者確認「實測已經正常」，屬維運紀錄）：
+
+  - 使用說明正常、Quick Reply 共 9 個、申訴在第 5 位
+  - 點擊後送出「我要申訴」
+  - Node 不再回「你好，我是午餐小天使……」
+  - LINE 官方帳號 Auto Reply 正常接手
+  - 原本午餐查詢全部正常
+  Webhook log（格式與 logEventArrival/logReplyOutcome 一致）：
+    [webhook] events=1 types=message
+    [webhook] reply success type=message
+
+==================================================
+【第十二章】2026-08-21 — 新午餐菜單 PDF 解析成 0 天（問題 12）
+==================================================
+
+這是本專案最重要的一次 parser 事件。
+
+問題（實際 log）：
+
+  sync log 出現：
+    行政1150831~0904菜單 → OK (0 天)
+  但同一時間舊格式文件：
+    行政115年6月15日~29日午餐菜單
+  仍然可以解析成 10 天。
+
+  「OK (0 天)」代表公告被抓到了、但 parser 一天都沒解析出來
+  ——照設計會觸發 ParserUnsupportedError BLOCKER，保住舊 cache，
+  但新菜單（開學週！）就是進不了系統。
+
+使用者如何描述：
+
+  回報「新的菜單沒有進來／查不到下學期的午餐」，並提供上述 log 方向。
+
+AI 分析——如何找到真正原因（兩層原因，缺一不可）：
+
+  第一層：routing 失敗——PDF 根本沒進 parser？
+  追查 menuPdfUrl()（sync.js）：原本要求 PDF URL decode 後必須包含
+  「午餐菜單」四個字。
+  舊 PDF URL：
+    ...115年6月15日29日午餐菜單-公告.pdf   ← 含「午餐菜單」✓
+  新 PDF URL：
+    .../11508310904-菜單公告.pdf          ← 只有「菜單」，沒有「午餐菜單」✗
+  → menuPdfUrl() 回 null → 走不到 downloadPdf/parseMenuPdf。
+  （證據：bcbf6ed diff 中 sync.js 把 '午餐菜單' 改成 '菜單'）
+
+  第二層：日期 token 格式不同——就算 routing 通了也解析不出來。
+  pdf.js parseDateColumns() 原本假設表頭 token 是拆開的：
+    舊：'6' '/' '15'（月份 token、斜線 token、日期 token 分開）
+  新 PDF 的 getTextContent() 卻吐出合併 token：
+    新：'8/31'（月/日合在同一個 token）
+  → 原本的 monthMatch/slashMatch 序列匹配不到任何欄位 → 0 欄 → 0 天。
+  （證據：bcbf6ed diff 中 parseDateColumns 整段重寫，
+    測試 Case B 直接以真實新 PDF URL 驗證）
+
+診斷方法論（值得記下來）：
+
+  - 遵循 reportBlocker() 的既定原則「先抓取此 PDF 檢查新版格式，
+    再擴充 parser，勿猜測」——直接抓真實新 PDF 看 token 結構，
+    而不是憑空猜 parser 哪裡壞了。
+  - 「同一份 code 舊格式 OK、新格式 0 天」這個對照組，
+    把問題範圍收斂到「新格式的差異點」，而不是全面懷疑。
+
+最終解決方式（commit bcbf6ed，diff 可證）：
+
+  1. sync.js menuPdfUrl()：比對字串由「午餐菜單」放寬為通用的「菜單」
+     （decode 失敗時 fallback 用原始 URL 比對，此保護原本就有）
+  2. pdf.js parseDateColumns() 重寫支援三種形態：
+        8/31    （完整 token：月/日）
+        8/+31   （斜線黏在日token前）
+        8+/+15  （月與斜線/日分離的多 token 組合）
+     邏輯：/^(\d{1,2})\/(\d{1,2})?$/ 抓完整 token；
+           否則純數字月 token + 下一 token /^(\/+)(\d{1,2})?$/；
+           再從後續純數字 token 補齊不足兩位的 day。
+  3. 增加合理範圍驗證：month 1–12、day 1–31，
+     超出直接跳過（防止把非日期數字誤判成日期欄）。
+  4. 順帶把 10E 的 pdf.js lazy import 一起帶進這個 commit
+     （parseMenuPdf 內 await import('pdfjs-dist/...')）。
+
+相關 Commit：
+
+  bcbf6ed — fix: support new lunch menu PDF format
+            （pdf.js +46 行改寫、sync.js 4 行、test/parse.test.mjs +76 行）
+
+Deploy 狀態：
+
+  見下一章（10G-2）。commit 已 push 至 origin/main。
+
+==================================================
+【第十三章】Phase 10G-1 — Parser regression 策略（問題 13）
+==================================================
+
+問題：
+
+  改了 parser 之後，怎麼確定沒有把「舊格式」弄壞？
+  又怎麼確定整條 sync pipeline 真的能跑完、而且不污染 production cache？
+
+策略：新舊雙格式對照 + 真 PDF + 臨時 DATA_DIR。
+
+  test/parse.test.mjs（bcbf6ed 新增 5 個 test，共 +76 行）：
+
+  Case A（舊格式 regression guard）：
+    「Case A 舊格式 115年6月15日~29日：解析 10 天」
+    - 以真實舊 PDF（fetch 官網 URL）解析
+    - assert records.length === 10
+    - assert 日期恰為 2026-06-15～06-29 的 10 個上課日
+    - 每筆都要 validateRecord().ok
+
+  Case B（新格式）：
+    「Case B 新格式 1150831~0904：解析 10 天，含 8/31~9/4」
+    - 以真實新 PDF（11508310904-菜單公告.pdf）解析
+    - assert 解析 10 天：
+      2026-08-31、09-01、09-02、09-03、09-04、
+      09-07、09-08、09-09、09-10、09-11
+    - 8/31：首欄日期被正確解析且有完整午餐資料
+      （school=馬公高中、staple/main/side1~side4 逐一鎖定）
+    - 9/1：dessert『100%果汁』保留（防止 dessert 再度誤刪）
+    - 每日都通過 validateRecord
+
+  為什麼用真實 PDF 而不是 mock？
+  因為這次事故的本質就是「真實世界的 token 形狀超出想像」。
+  mock 永遠長得像昨天認知的樣子；只有真 PDF 能抓住下一次的意外。
+
+  sync pipeline 端到端驗證（維運紀錄）：
+
+    以 temporary DATA_DIR（環境變數指向暫存目錄）執行 sync，
+    確認：
+    - RSS 抓取 → 新公告 routing → PDF 下載 → 解析 10 天 →
+      validateRecord → integrityCheck → atomic write 全部通過
+    - 產物只寫進臨時目錄，production data/lunch.json 完全不被污染
+    （❌ 該次執行本身無法由 repository 重現；
+      但 DATA_DIR 機制與 safeWriteJson 原子寫入可由 code 證明支持此做法）
+
+驗證結果：
+
+  35/35 tests PASS（parse 12 + service 11 + webhook 12）。
+  其中 Case A 證明舊格式 2026-06-15～06-29 仍是 10 天——沒有破壞；
+  Case B 證明新格式 2026-08-31～09-11 完整解析——問題解決。
+
+相關 Commit：
+
+  bcbf6ed（同時包含修正與 regression tests——修 bug 必附測試是本專案慣例）
+
+==================================================
+【第十四章】Phase 10G-2 — Render 部署與 production 驗證（問題 14）
+==================================================
+
+COMMIT：
+
+  bcbf6ed「fix: support new lunch menu PDF format」（2026-08-21 10:42 +0800）
+  3 files changed：src/lunch/pdf.js、src/lunch/sync.js、test/parse.test.mjs
+  （109 insertions, 17 deletions）
+
+PUSH：
+
+  main → origin/main 完成（目前 origin/main === bcbf6ed）。
+
+DEPLOY（Render manual deploy，維運紀錄）：
+
+  build PASS → deploy PASS → health PASS → scheduler PASS →
+  startup sync PASS → 新 PDF 解析 PASS。
+
+Production cache 實際內容（來自本次對話提供之維運紀錄 /
+使用者提供的 Render log，❌ repository 無法直接重現）：
+
+  2026-08-31
+  2026-09-01
+  2026-09-02
+  2026-09-03
+  2026-09-04
+  2026-09-07
+  2026-09-08
+  2026-09-09
+  2026-09-10
+  2026-09-11
+
+  與 Case B 測試預期完全一致——parser 修正端到端生效。
+
+==================================================
+【第十五章】Render ephemeral storage 導致舊資料消失（問題 15）
+==================================================
+
+問題：
+
+  10G-2 部署成功後，發現 2026-06-15 等六月舊資料在 production 可能查不到。
+
+第一時間容易誤判的方向（刻意記錄下來）：
+
+  「是不是 parser 改壞了，舊 PDF 現在解析不出來？」
+
+AI 分析——把兩件事分開看（這是本章核心）：
+
+  1. 程式解析能力（parser capability）：
+     Phase 10G-1 的 Case A regression test 已經證明：
+     舊 PDF 仍然解析得出 10 天（35/35 PASS）。
+     → parser 沒有壞。
+  2. production cache persistence（資料持久性）：
+     真正原因是部署環境問題：
+     - production 沒有設定 DATA_DIR
+     - Render 沒有掛 Persistent Disk
+     - 因此 production 使用專案內 data/
+     - 而 Render 的 filesystem 是 ephemeral（短暫的）
+     → 每次 redeploy，容器重建，舊 cache 檔案直接消失
+     → 新容器的 startup sync 只會重新抓「目前官方最新的菜單」
+       （pickTargets 只挑最新一份文件）
+     → 所以 cache 只剩 8/31~9/11，六月的資料不是「解析失敗」，
+       而是「部署後 cache 根本不存在」。
+
+判斷順序（方法論）：
+
+  先用 regression test 排除程式問題 → 再往環境層找原因。
+  如果反過來先去改 parser，就會白改而且引入風險。
+
+當下的狀態與後續方向：
+
+  - README.md 其實早已寫明：
+    「Persistent Disk：需要。……否則午餐 Cache 會遺失」
+    以及 DATA_DIR 應指向 Persistent Disk 掛載路徑——
+    也就是說，這個風險在文件上是已知項，但 production 環境尚未配置。
+  - 短期影響：舊日期查詢回 📭 空資料（formatEmptyDateMessage，
+    屬既有正常行為）；當期菜單查詢完全正常。
+  - 根本解法（掛 Persistent Disk + 設定 DATA_DIR）屬 Render Dashboard
+    操作與未來任務，本次歷史整理不予執行。
+  - 另一個可考慮的方向（僅列出，未實作）：cache 由 git 追蹤的
+    data/lunch.json 在 repo 中保有 5/29~8/11 的資料，
+    未來若需要可在啟動時 seed——目前資料無法確認此方案是否已被討論採納。
+
+==================================================
+【第十六章】Git 歷程總表（由 git log 完整還原，共 14 個 commit）
+==================================================
+
+以下依時間順序（舊 → 新）。全部皆已存在於 origin/main。
+「測試」欄為當時可考的紀錄；「deploy」欄：Render 為手動部署，
+確切每次部署時間無法由 repository 確認者標「（手動）」。
+
+1. 813daac | 2026-08-10 | chore: prepare lunch angel for deployment
+   解決：專案從零到可部署的完整基礎（webhook/parse/pdf/rss/scheduler/
+         sync/validator/server/README/package.json/data/lunch.json）。
+   測試：此階段尚無 test/ 目錄。push ✓ deploy（手動）
+
+2. 7a4dc62 | 2026-08-11 | feat: add lunch quick replies and date queries
+   解決：Quick Reply + 關鍵字查詢 + postback 分派 + service.js 誕生
+         （+242 行）。push ✓ deploy（手動）
+
+3. 5691941 | 2026-08-11 | feat: keep quick replies on every response
+   解決：每一則回覆統一附加 quickReply，不再遺漏。push ✓
+
+4. b225a75 | 2026-08-11 | feat: add lunch angel rich menu
+   解決：Rich Menu 全套（richMenu.js + 第一版圖片 1090661 bytes）。
+         .gitignore 加 data/rich-menu.json。
+
+5. a82289c | 2026-08-11 | fix: use correct sdk accessors and repair rich menu on skip
+   解決：LINE SDK v11 正確 accessor；rebuild 遇到已存在 menu 時的修復流程；
+         圖片換成 157892 bytes。
+
+6. ad2e6f0 | 2026-08-11 | feat: add interactive date lunch queries
+   解決：dateQuery.js、pending 日期查詢狀態、昨天/今天/明天 postback、取消。
+
+7. 17a40ad | 2026-08-11 | feat: improve lunch angel menu and date query UX
+   解決：訊息格式化與日期查詢 UX 打磨；圖片 448044 bytes。
+
+8. 91605a6 | 2026-08-11 | fix: improve rich menu visual layout and actions
+   解決：Rich Menu 視覺排版修正；圖片定版 286861 bytes（10F 前的最終版）。
+
+9. 74d9ac7 | 2026-08-11 | feat: hide regular weekends from weekly lunch menu
+   解決：本週菜單隱藏無特殊供餐的一般週末（補課/補假/國定假日等仍顯示）。
+
+10. 882fdd4 | 2026-08-12 | fix: support four lunch sides and improve pdf parsing
+    解決：副菜 3→4 道、safeDish、dessert 判斷修正、integrityCheck；
+          test/ 三檔誕生並大幅擴充（+282 行）。當時 npm test 30/30。
+
+11. 2f4ed74 | 2026-08-12 | feat: add webhook diagnostic logging
+    解決：logEventArrival/logReplyOutcome/logLineReplyError 觀測冷啟動問題。
+
+12. 0888a3f | 2026-08-13 | feat: add appeal quick reply
+    解決：新增第 9 個 Quick Reply「🙋我要申訴」（+4 行）。
+          教訓：曾只存在 working tree 導致 production 看不到（見第十一章）。
+
+13. bd5b0b1 | 2026-08-13 | feat: refine appeal flow
+    解決：isAppealMessage 早退分流、QR 移到第 5 位、INFO_REPLY 申訴提示、
+          4 個 regression test。30/30 PASS。push ✓ deploy（手動）✓ LINE 實測 ✓
+
+14. bcbf6ed | 2026-08-21 | fix: support new lunch menu PDF format
+    解決：menuPdfUrl「午餐菜單」→「菜單」；parseDateColumns 支援 8/31 等
+          合併 token + month/day 範圍驗證；Case A/B regression tests；
+          pdfjs lazy import 一併入庫。35/35 PASS。
+          push ✓ deploy（手動）✓ production cache 8/31~9/11 ✓
+
+未 commit 的 working tree 變更（截至本文件建立）：
+
+  - assets/rich-menu.png ← Phase 10F-3（啟動小天使圖片）
+  - src/line/richMenu.js ← Phase 10F-2（啟動小天使 message action）
+  - src/server.js        ← Phase 10E（ready flag / /health 503 / startup logs）
+  - docs/                ← Phase 紀錄文件（含本文件與 PHASE_10C_10F 紀錄）
+
+  ※ 這些變更在實際上線環境中已生效（Render 跑的是包含它們的版本），
+    但 repository 尚未反映。未來應分 Phase 補 commit，
+    且 commit 前務必確認 staged files 只含預期檔案（10F-8 的教訓）。
+
+==================================================
+【第十七章】失敗與阻塞紀錄彙整（不只記成功）
+==================================================
+
+依專案原則：中間的失敗不刪除，與最終解決分開記錄。
+
+1. PowerShell hashtable argument binding 失敗
+   現象：用 PowerShell 直接傳複雜物件／hashtable 當參數給腳本時，
+         binding 行為不可靠導致操作失敗。
+   對策：改寫成獨立腳本檔案執行（node script.mjs），不走命令列參數。
+   （屬維運紀錄；腳本本身在 repository 之外，無法由 repository 重現）
+
+2. PowerShell 主控台輸出 mojibake（編碼亂碼）
+   現象：在 Windows PowerShell 讀取含中文的檔案／git diff 輸出時，
+         中文顯示為亂碼（例如讀 official-sync.json、git show diff 內容）。
+   本質：多為「顯示層」編碼問題——檔案本身是 UTF-8，程式讀取正常。
+   影響：僅影響人工判讀，需以正確編碼方式重讀或忽略顯示雜訊。
+   （本次建立本文件的過程中同樣觀察到此現象，如實記錄）
+
+3. LINE SDK v11 accessor 用錯
+   已於第一章詳述；commit a82289c 佐證。
+
+4. Render CLI 不存在 / API 無法存取
+   現象：本機沒有 Render CLI、API key、deploy hook，無法自動部署。
+   對策：部署一律由使用者手動於 Render Dashboard 操作；
+         因此本文件把 COMMIT / PUSH / DEPLOY / REAL LINE TEST 四段嚴格分開。
+
+5. deployment stale 導致 Quick Reply 看不到
+   已於第十一章 10F-6 詳述（local=9 / production=8 事件）。
+
+6. parser routing 失敗（新 PDF 沒進 parser）
+   已於第十二章詳述（menuPdfUrl「午餐菜單」比對失敗）。
+
+7. PDF 日期 token 格式差異（8/31 vs 6 / 15）
+   已於第十二章詳述（parseDateColumns 重寫）。
+
+8. sync BLOCKER 機制被觸發（設計中的「失敗」，但保住了資料）
+   新格式事件中「OK (0 天)」觸發 ParserUnsupportedError BLOCKER，
+   sync 中止且舊資料完整保留——這是防線正常運作，不是缺陷。
+
+9. Render ephemeral filesystem 清空 production cache
+   已於第十五章詳述（六月資料消失事件）。
+
+10. 冷啟動首次無回覆
+    已於第七、八章詳述；Render 平台層 cold start 至今無法完全消除，
+    屬已知限制而非已解決事項。
+
+==================================================
+【第十八章】目前架構總覽（截至本文件建立）
+==================================================
+
+使用者 → LINE Rich Menu / Quick Reply → LINE Platform → Node.js Webhook
+
+  ├─ 一般 postback（today/tomorrow/week/date/info）
+  │     → src/lunch/service.js → replyMessage + Quick Reply（9 項）
+  │
+  ├─ 「我要申訴」（message text = 我要申訴）
+  │     → isAppealMessage() 早退 return null（Node 不 reply）
+  │     → LINE Official Account Auto Reply 接手（LINE Console 設定，
+  │       非 repository 內容；維運紀錄稱其導向 Google Form）
+  │
+  └─ 其他 message（文字 / 日期 / 關鍵字）
+        → 既有 message handling（buildReplyText）
+
+啟動流程（Render → Node.js）：
+
+  Render 平台層 cold start（程式無法控制）
+    → Node startup：static imports（pdfjs 已 lazy，不在其中）
+    → [startup] static imports completed
+    → app.listen；listen 前 /health = 503 {"status":"starting"}
+    → listen 完成 → markReady → /health = 200 ready:true
+    → startLunchScheduler（05:00 Asia/Taipei 排程 +
+       若今天尚未同步則背景跑一次非強制 startup sync）
+    → RSS → PDF 下載 → 座標解析 → validate/integrity → atomic write
+
+==================================================
+【第十九章】目前無法確認的歷史資訊清單
+==================================================
+
+以下項目在現有 Git / 程式碼 / 測試 / 本次對話資料中均無法證明，
+如實列出，不做任何補寫：
+
+1. 專案最初（第一個 commit 之前）使用者與 AI 的對話內容、
+   當初建立專案的原始措辭。
+2. 813daac 之前的本地開發嘗試是否存在及其內容。
+3. 各次 Render 手動部署的精確時間與 build log 原文
+   （repository 不保存部署紀錄；production cache 清單來自本次對話提供之
+    維運紀錄）。
+4. LINE Console 的 Auto Reply 具體設定內容（導向 Google Form 一節
+   僅為維運口述紀錄）。
+5. Phase 10F-3 pixel-level verification 的腳本與逐像素報告原文
+   （結論有留紀錄，工具與輸出不在 repository）。
+6. Phase 10E 冷啟動 import 量測的 benchmark 程式與原始數據
+   （數字僅存在維運紀錄）。
+7. @napi-rs/canvas 圖片編輯腳本的原文（repository 外的工具腳本）。
+8. 「臨時 DATA_DIR 跑 sync pipeline」該次執行的 console log 原文。
+9. server.js（ready flag）何時會補 commit——尚未排定。
+10. 使用者各階段的原始提問逐字稿——本文件僅能以「方向」描述。
+
+==================================================
+【第二十章】維運注意事項（歷史教訓濃縮）
+==================================================
+
+1. 「我要申訴」由 LINE Console Auto Reply 處理，Node 一律不 reply
+   （webhook.js isAppealMessage 早退）。改動 handleEvent 時不可破壞此分流。
+2. 修改 Quick Reply 後必須走完 commit → push → deploy 才會上線；
+   診斷線上問題第一步：比較 local source / git HEAD / production 三方。
+3. Rich Menu source of truth 是 src/line/richMenu.js RICH_MENU_AREAS；
+   圖片是 assets/rich-menu.png；兩者必須同步修改；
+   改完需 rebuild 才會同步到 LINE。
+4. rebuild Rich Menu 前必做 READ-ONLY verification 與 remote image snapshot；
+   rebuild 後要比對 remote image byte-identical / pixel diff = 0。
+5. commit 前確認 staged files 只包含本 Phase 預期檔案（10F-8 慣例：
+   只 stage 相關 3 檔）；不要把不同 Phase 的 working tree 變更混進同一個 commit。
+6. /health ready 代表 Node 可處理 webhook，不代表背景 sync 已完成。
+7. 修改 parser 必須同時附上新舊格式 regression tests（Case A/B 模式），
+   並優先用真實官方 PDF 驗證，勿用想像中的格式 mock 自己。
+8. parser 解析 0 天時 BLOCKER 機制會保留舊 cache——看到 BLOCKER 先抓 PDF
+   檢查格式，「勿猜測」。
+9. 「程式解析能力」與「production cache persistence」要分開診斷：
+   regression test PASS ≠ production 資料還在。
+   Production 要持久化 cache 必須掛 Persistent Disk 並設定 DATA_DIR
+   （README 已載明需求，環境尚未配置）。
+10. Windows PowerShell 有主控台 mojibake 與 hashtable binding 問題；
+    複雜操作寫獨立腳本檔執行，勿塞命令列參數。
+11. 修改 webhook/service 後必須跑 npm test（目前 35/35）。
+12. 不要把 LINE Console 設定誤認為 repository source code；
+    也不要直接在 LINE Console 手改 Rich Menu。
+
+--------------------------------------------------
+文件結尾
+--------------------------------------------------
+
+本文件涵蓋範圍：專案起源（813daac，2026-08-10）～ Phase 10G-2
+（bcbf6ed，2026-08-21 部署完成）與 ephemeral storage 事件之後。
+
+重大問題計 15 題（對應任務清單問題 1~15），全數收錄於
+第一～十五、十七章；Git 歷程整理至 origin/main 最新 commit bcbf6ed。
+
+==================================================
+—— 文件結束 ——
+==================================================
+
+==================================================
+【第十四章】Phase 10G-3 — 菜單異動公告自動套用（課題 15）
+==================================================
+
+◆ 緣由
+　官方除了發布正式菜單 PDF 之外，也可能發布「菜單異動／更正公告」（例如
+　2026-08「行政8/31~9/11菜單異動」），內容為一行一天、以「M/D」開頭、描述
+　當日菜色的 增／刪／替換／選擇規則。先前 sync 只處理正式菜單 PDF，異動公告
+　內文未套用，導致 LINE 回答的菜色與官方當日公告不一致（例如 8/31 主菜實際
+　為「冬瓜排骨」單一主菜，PDF 仍為「冬瓜排骨 / 黑椒雞丁 (擇一)」）。
+
+◆ 觀察
+　1. 異動公告的內容在 feed 中是包在 CDATA 的 HTML（<p>/<br>），沒有實體
+　　 換行；直接用 split('\n') 解析不到任何日期行。
+　2. feed 中同一篇公告的內文會被重複出現很多次（6/8~6/29 一篇甚至重複
+　　 30 次以上）；若不處理，規則向量會膨脹數十倍、needsReview 與日誌爆量。
+　3. 歷史異動公告（5/29~6/5、6/8~6/29 等）與「當期正式菜單」日期完全沒有
+　　 交集；若全數套用，會產生數千筆對不上日期的 needsReview（浪費記憶體、
+　　 製造大量無效 log）。
+　4. 公告格式前後不一：
+　　 - 當期 8/31~9/11：改為／更改為／取消／新增／本日主菜僅一種／沒有2選1
+　　 - 歷史 6/8~6/29：更改為／更改／改／取消／新增／主菜雙拼(3選2)／2選1
+　　 - 歷史 5/29~6/5：整列菜單為菜名清單、用「增加」而非「新增」、
+　　   也有「滷豆干改滷豆腐」的「改」式。
+　5. 蔬菜替換（9/7青江菜、9/8小白菜、9/9空心菜、9/10A菜、9/11莧菜）
+　　 在正式菜單欄位中並不存在（PDF 只寫「季時蔬菜」）——不能亂塞。
+　6. 9/2 新增鮮肉包當日 main/side1~side4 已全滿，沒有可安全放置的欄位。
+
+◆ 根因
+　1. 舊流程只解析 PDF，沒有「異動公告」這條資料來源。
+　2. 對 HTML/CDATA 內容直接逐行 parse → 一行都對不上。
+　3. 沒有「日期範圍重疊」或「規則去重」的保護 →
+　　 歷史公告重複內文全部掃進來，報表與記憶體爆量。
+
+◆ 解決方案（src/lunch/corrections.js）
+　1. toPlainLines()：剝離 CDATA、<br>/</p> → 換行、去標籤、解 &nbsp;/&amp; 等，
+　　 把單行 HTML 還原成「一行一天」的純文字。
+　2. parseCorrectionLines()：只吃「M/D 開頭」的行；「M/D~M/D 異動如下」
+　　 標題行跳過；以「，／，」切小句，逐句分類：
+　　   取消（A取消、A、B取消）→ 替換（更改為 > 更改 > 改為 > 改成 > 改）
+　　   → 新增（新增/增加）→ 主菜僅一種／沒有2選1 → 其餘記為 note。
+　　 「X改為Y、Z取消」的混合句先偵測「、」前段含「改」再拆段，避免
+　　 把「滷甜不辣改水煮蛋」誤當成取消清單。
+　3. applyCorrections()：深拷貝 base records 後逐日套用；找不到菜名欄位
+　　 一律 needsReview（不猜測、不改動）；新增菜色優先放 main，其次
+　　 第一個空格 side1~side4，全滿則 needsReview（如 9/2 鮮肉包）。
+　　 重複 token（如替換造成「A / A」）與同欄重複菜名會去重。
+　4. applyCorrectionsFromPosts()：套完後逐日重新 validateRecord，任一
+　　 天驗證失敗就「回退正式菜單原值」並記入 reverted（不覆蓋正確資料）。
+　5. 去重與範圍保護：
+　　 - extractCorrectionRules 只採用「與 base 日期重疊」的公告
+　　   （postOverlapsDates），歷史公告自然被排除（對應 9 月菜單，6/8~6/29
+　　   公告無交集 → 0 條規則）。
+　　 - 規則以 dateRaw+內容 signature 去重，杜絕內文重複造成的膨脹。
+　6. sync.js 整合：在 PDF 解析 → invalid 檢查之後、寫入 cache 之前，
+　　 in-memory 套用異動，再執行 validation passed → merge → atomic write。
+　　 異動公告由 isCorrectionPost()（標題含異動/加菜/變更/更正 + 內容有
+　　 M/D 與增刪改字樣）識別；正式菜單與異動各自處理，互不干擾。
+
+◆ 套用結果（本次 8/31~9/11）
+　- 8/31 main：冬瓜排骨（單一主菜）　　9/1 main：香滷肉燥
+　- 9/3 main：醬汁里肌肉片 / 滷雞腿 (擇一)　9/4 main：洋蔥肉絲 / 炸雞翅 (擇一)
+　- 9/7 main：花生燒雞（取消糖醋排骨、滷雞腿後新增，單一主菜）
+　- 9/9 main：梅干雞丁 / 紅燒鱸魚 (擇一)　　9/11 main：滷骨腿
+　- 9/2 披薩口味、披薩飯2擇1 → note；新增鮮肉包 → needsReview（無欄位可放）
+　- 青江菜/小白菜/空心菜/A菜/莧菜 五項替換 → needsReview（欄位中無對應菜名）
+　- applied 11 條、needsReview 6 條、note 3 條；套用後逐日 validateRecord 全數通過。
+　- 重複執行（相同 base + 相同規則）結果一致（idempotent）；cache 寫入
+　　 以臨時 DATA_DIR 驗證，production data/ 未動。
+
+◆ 測試（test/corrections.test.mjs，新增 15 案，全部 PASS）
+　- toPlainLines（CDATA/HTML/Br）／真實 8/31~9/11 公告解析（21 條規則）
+　- Case C 逐項替換、Case D 取消+新增、Case E 主菜僅一種、
+　  Case F 9/2 複合異動（note + 鮮肉包 needsReview）
+　- 蔬菜替換 needsReview 誠實性、idempotent、重複規則去重
+　- June 公告與 9 月菜單無交集 → 不套用
+　- Case G 歷史公告（6/8~6/29、5/29~6/5）可延伸解析、不崩潰
+　- applyCorrectionsFromPosts 端到端（真實 PDF base + 真實公告）＋驗證失敗回退
+　- isCorrectionPost 識別
+　- 全量 npm test：54/54 PASS（原 35 + 新增 19：corrections 15 案 + service 4 案）。
+
+◆ 注意事項
+　1. 異動公告只在「日期與正式菜單重疊」時套用；換新菜單週期請留意
+　　 新公告的日期範圍自動被納入（resolveDate 依 base 日期解析年份）。
+　2. 公告日期在 base 之外 → needsReview（conservative，不猜測）。
+　3. 蔬菜替換目標是通稱「季時蔬菜」時無法對位 → 刻意保留 needsReview，
+　　 由人工在後續公告確認，避免誤改。
+　4. 本階段未 commit／push／deploy（依課題規範）。
+
+================================================== 里程碑總結 追加
+==================================================
+--------------------------------------------------
+Phase 10G-3 補充｜依需求書第 20 節格式
+--------------------------------------------------
+
+【使用者需求】
+　馬公高中網站會另外發布午餐菜單勘誤／異動公告。LINE 目前只抓原始 PDF，
+　造成後續菜單修改沒有同步。使用者要求爬取官方異動公告並更新 LINE。
+
+【問題】
+　原本 lunch sync 只處理原始菜單 PDF。官方異動是另一篇公告；不同歷史公告
+　格式不一致（改為／更改為／改／取消／新增／增加／主菜雙拼／2選1／整列菜名）。
+　有 replace / add / cancel / 主菜選擇規則等不同語意，不能靠單一 hardcode 或
+　單一 regex 解決。
+
+【調查】
+　RSS 已可抓到「行政8/31~9/11菜單異動」，並列出完整官方異動規則（22 節下方
+　Before/After）。也調查到歷史公告「行政6/8~6/29午餐加菜、變更公告」、
+　「行政5月29日~6月5日更改菜單(詳內文)」；確認歷史格式比目前公告更多樣
+　（6/8~6/29 一篇在 feed 中內文重複 30 次以上；5/29~6/5 用「增加」且含整列
+　菜名行）。另確認 8/31~9/11 正式 PDF 的「季時蔬菜」無法對位公告中的
+　青江菜／小白菜／空心菜／A菜／莧菜替換 → 這些目標在 base 中不存在。
+
+【解法】
+　建立（src/lunch/corrections.js）：
+　 - Errata detector：isCorrectionPost（標題含異動/變更/更改/勘誤/加菜/更正 +
+　   內容有 M/D 開頭與增刪改字樣），不 hardcode URL／文章 ID／完整標題。
+　 - Errata parser：parseCorrectionLines（一行一天、以「，／，」切小句），
+	   支援 改為/更改為/更改/改成/改 → replace；新增/增加 → add；
+	   取消（A、B取消）→ remove；本日主菜僅一種/沒有2選1 → single-main；
+	   其餘 → note；「X改為Y、Z取消」混合句拆段處理。
+	 - 過濾：YouTube URL、※備註、括號說明不得污染菜名。
+	 - Correction applier：applyCorrections／applyCorrectionsFromPosts。
+	   依日期套用 → locateDish 找到包含菜名的欄位才改 → 0 個或 >1 個匹配一律
+	   needsReview（不猜測、不改動）→ 找不到資料欄位一樣 needsReview。
+	   新增菜色優先 main，其次第一個空 side1~side4，全滿 → needsReview。
+	 - 多主菜收斂：collapseMainToSingle（去重／去(擇一)），8/31 與 9/7
+	   最後為「單一主菜」，不再殘留 糖醋排骨/滷雞腿/擇一/2選1。
+	 - 去重與範圍保護：extractCorrectionRules 只採用「與 base 日期重疊」的
+	   公告（postOverlapsDates），並以 dateRaw+內容 signature 去重，
+	   歷史六月公告對九月菜單無交集 → 0 條規則。
+	 - Idempotent：相同 base + 相同規則 → 相同結果；重複內文不重複套用。
+	 - Sync 整合：PDF 解析 → invalid 檢查 → applyCorrectionsFromPosts →
+	   逐日 validateRecord（任一失敗回退正式菜單原值，記 reverted）→
+	   validation passed → merge → atomic write。LINE 讀取 corrected cache。
+	 - 9/2 特殊案例：schema（main/staple/side1~4/dessert + info）無法精確表達
+	   三層資訊（披薩/飯2擇1 × 披薩內兩口味擇一 × 每人一片）。為避免誤導，
+	   不把兩種口味塞進 main（不偽造雙主菜）；口味與「披薩、飯2擇1」記為
+	   note（sync log），主菜欄位維持「披薩」、主食維持飯類 → LINE 顯示
+	   不誤導（見 service.test 9/2 案）。鮮肉包（當日副菜全滿）→ needsReview。
+
+【官方來源】（本次實際抓取）
+　 - 午餐公告分類：https://www.mksh.phc.edu.tw/category/post-lunch/
+　 - RSS feed：https://www.mksh.phc.edu.tw/category/post-lunch/feed
+　 - 正式菜單 PDF：https://www.mksh.phc.edu.tw/wp-content/uploads/sites/99/2026/08/11508310904-菜單公告.pdf
+　 - 勘誤公告「行政8/31~9/11菜單異動」：
+	 https://www.mksh.phc.edu.tw/?p=48506
+	 （等效：.../post-a/post-lunch/行政8-319-4菜單異動-page48506）
+　 - 歷史「行政6/8~6/29午餐加菜、變更公告」page45777：
+	 https://www.mksh.phc.edu.tw/post-a/post-administration/行政6-86-29午餐加菜、變更公告-page45777
+　 - 歷史「行政5月29日~6月5日更改菜單(詳內文)」page45496：
+	 https://www.mksh.phc.edu.tw/post-a/post-administration/行政5月29日6月5日更改菜單詳內文-page45496
+
+【驗證】
+　 - 新測試 test/corrections.test.mjs 15 案 + test/service.test.mjs 新增 4 案
+	 （8/31、9/2、9/7、9/11 LINE 文字回歸）＝ 新增 19 案，全部 PASS。
+	 - 完整 npm test：54/54 PASS。
+	 - 單元案例：Case A~J（一般改為／改／新增／A、B取消／單一主菜／同日多操作／
+	   重複內文不去重複套用／apply 兩次相同／不存在的 from 不誤改／歷史 unsupported
+	   不 crash）皆有對應測試。
+	 - Temp DATA_DIR E2E：sync OK (10 天)；applied 11 項、needsReview 6 項、
+	   note 3 項；套用後逐日 validateRecord 全過；cache 內容逐一核對 Before/After。
+	 - unsupported historical pattern（目前不猜、保留原文）：整列菜名行（5/29）、
+	   雙主菜(2選2)、主菜雙拼(3選2)、主食二選一(3選2)、「加改豆奶」式語意不明、
+	   披薩兩口味類 note —— 一律記為 note／needsReview，不誤改欄位。
+==================================================

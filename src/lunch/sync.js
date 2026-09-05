@@ -6,6 +6,7 @@ import { fetchLunchFeed, extractPdfUrls, extractPlainText } from './rss.js';
 import { parseMenuPdf } from './pdf.js';
 import { buildEntriesFromPdf, buildEntryFromText } from './parse.js';
 import { validateRecord } from './validator.js';
+import { isCorrectionPost, applyCorrectionsFromPosts } from './corrections.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_DATA_DIR = path.resolve(__dirname, '../../data');
@@ -463,6 +464,35 @@ async function doSync(force) {
   if (invalid.length) {
     for (const fail of invalid) {
       console.error(`[lunch] 驗證失敗 ${fail.date}: ${fail.errors.join('、')}（保留原 cache）`);
+    }
+  }
+
+  // ---- 異動／更正公告套用（套在正式 PDF 的 base records 上） ----
+  const correctionPosts = items.filter(isCorrectionPost);
+  if (correctionPosts.length) {
+    try {
+      const corrected = applyCorrectionsFromPosts(parsed, correctionPosts, {
+        validate: (r) => validateRecord(r).ok,
+      });
+      for (const c of corrected.report.applied) {
+        console.log(`[lunch] 異動套用 ${c.date} ${c.field}: ${c.from} → ${c.to}`);
+      }
+      for (const nr of corrected.report.needsReview) {
+        console.warn(`[lunch] 異動待確認 ${nr.date ?? nr.dateRaw}: ${nr.text}`);
+      }
+      for (const note of corrected.report.notes) {
+        console.log(`[lunch] 異動註記 ${note.date} ${note.dateRaw ?? ''}: ${note.text}`);
+      }
+      for (const rv of corrected.report.reverted) {
+        console.warn(`[lunch] ${rv.date} ${rv.reason}`);
+      }
+      corrected.records.forEach((r, i) => {
+        parsed[i] = r;
+      });
+      log(`corrections applied (${corrected.report.applied.length} 項；待確認 ${corrected.report.needsReview.length} 項)`);
+    } catch (err) {
+      console.error(`[lunch] 異動公告套用失敗：${err.message}`);
+      console.error('[lunch] 已保留正式菜單原值，不覆寫。');
     }
   }
 
