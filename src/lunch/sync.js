@@ -34,6 +34,11 @@ const OFFICIAL_HOSTS = new Set([
 ]);
 const FETCH_TIMEOUT_MS = 15_000;
 
+// 選取「近期菜單公告」的天數窗：官方發布下一期菜單時，仍在服務中的
+// 當期菜單通常落在這範圍內。範圍內、帶 PDF、且尚未處理的菜單都會被
+// 納入同步候選，避免只同步最新一份而漏掉當期菜單。
+const RECENT_MENU_WINDOW_DAYS = 45;
+
 // 測試用 hooks（正常執行不會觸發）
 const FORCE_PDF_FAIL = process.env.LUNCHANGEL_FORCE_PDF_FAIL === '1';
 const FORCE_VALIDATE_FAIL = process.env.LUNCHANGEL_FORCE_VALIDATE_FAIL === '1';
@@ -294,7 +299,21 @@ function integrityCheck(records) {
   return { ok: true };
 }
 
-async function pickTargets(menuItems, meta, force) {
+/**
+ * 選取要同步的候選菜單公告。
+ *
+ * 只挑「最新一份」是錯的：官方會在當期尚未結束前就發布下一期菜單
+ * （例：8/31~9/11 還在服務中，9/14~9/25 已上架）。若只同步最新一份，
+ * 正在服務期間的菜單在「全新環境（Render ephemeral storage 清空快取、
+ * 首次部署）下永遠不會進入 cache → 今日/本週/指定日期全查無資料」。
+ *
+ * 通用規則：
+ *  - 最新一份公告一定納入（即使沒有 PDF，可能是純文字菜單）。
+ *  - 再納入所有「近期發布、帶 PDF、非異動公告」的菜單文件。
+ *  - merge 只覆蓋解析出的日期、其他日期保留，因此同時納入
+ *    「目前菜單 + 未來菜單」只會讓 cache 更完整，不會互相覆蓋。
+ */
+export async function pickTargets(menuItems, meta, force) {
   const seen = new Set();
   const targets = [];
 
@@ -305,10 +324,15 @@ async function pickTargets(menuItems, meta, force) {
     targets.push(item);
   };
 
-  const latest = menuItems[0];
-  const latestPdf = menuItems.find((item) => menuPdfUrl(item) !== null);
-  addCandidate(latest);
-  addCandidate(latestPdf);
+  addCandidate(menuItems[0]);
+
+  const cutoff = new Date(Date.now() - RECENT_MENU_WINDOW_DAYS * 86_400_000);
+  for (const item of menuItems) {
+    if (menuPdfUrl(item) === null || isCorrectionPost(item)) continue;
+    const pub = new Date(item.pubDate || '').getTime();
+    if (pub && pub < cutoff.getTime()) continue;
+    addCandidate(item);
+  }
 
   return targets;
 }

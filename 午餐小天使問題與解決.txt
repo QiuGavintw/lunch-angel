@@ -1319,8 +1319,106 @@ AI 分析——把兩件事分開看（這是本章核心）：
 第一～十五、十七章；Git 歷程整理至 origin/main 最新 commit bcbf6ed。
 
 ==================================================
-—— 文件結束 ——
+ —— 文件結束 ——
 ==================================================
+
+==================================================
+【第二十一章】Production 緊急：pickTargets 只挑最新一份導致當期菜單消失（2026-09-08）
+==================================================
+
+◆ 問題症狀（來自 Production log）
+
+  2026-09-08 startup sync 顯示：
+    [lunch] latest lunch document found: 行政 1150914~0925-菜單公告
+    [lunch] cache updated (9 天：2026-09-14...2026-09-24)
+
+  結果：
+    🍱 今日午餐(2026-09-08) → 異常（查無資料）
+    📆 本週午餐 → 查無資料
+    🔎 指定日期 2026-09-08 → 查無資料
+
+  當時官方 feed 順序（新→舊）：
+    1. 行政 1150914~0925-菜單公告      ← 最新，有 PDF
+    2. 行政8/31~9/11菜單異動           ← 更正公告，無 PDF
+    3. 行政1150831~0904菜單            ← 當期菜單，有 PDF（涵蓋 8/31~9/11）
+    4. 行政115年6月15日29日午餐菜單-公告 ← 舊菜單（>45天前）
+
+  當期菜單（8/31~9/11）和未來菜單（9/14~9/25）在 feed 中同時存在。
+  但 sync 只選到「最新一份」即 9/14~9/25；8/31~9/11 從未進入 cache。
+
+◆ 根本原因（不是「merge 覆蓋」，是「從未下載」）
+
+  sync.js 原始 pickTargets 邏輯（186e86d）：
+    latest  = menuItems[0];                          ← 最新一份
+    latestPdf = menuItems.find(item => menuPdfUrl)    ← 第一個有 PDF 的
+    → 兩者都是 9/14~9/25 那一份
+
+  8/31~9/11 的 PDF（11508310904-菜單公告.pdf）在 feed 中排第 3，
+  被 menuItems[0] 先行選走，pickTargets 永遠不會選到它。
+
+  merge 是 additive（{...lunch} 再覆寫 parsed dates）——不是覆蓋性 bug。
+  問題是 8/31~9/11 從來沒被 parse 過，cache 中根本沒有這些日期。
+
+  證據：臨時 DATA_DIR 跑非強制 sync → cache 只有 9/14~9/24（9天），
+  9/25 因整天空資料被 validation 排除。與 production log 完全吻合。
+
+◆ 修正方案（通用，不硬編日期）
+
+  1. sync.js pickTargets 重寫：
+     - 最新一份公告（即使無 PDF、純文字）一定納入
+     - 再納入所有「近期發布、帶 PDF、非異動公告」的菜單文件
+     - RECENT_MENU_WINDOW_DAYS（45天）做 cutoff
+     - meta.processed 做節流，避免重複下載
+
+  2. sync.js 導出 pickTargets（供 regression test 直接調用）
+
+  3. service.js DATA_DIR 修正：
+     - 原本 LUNCH_DATA_PATH 硬編為 repo data/lunch.json
+     - 改為比照 sync.js，尊重 process.env.DATA_DIR
+     - 避免「sync 寫進 DATA_DIR、service 卻讀專案 data/」的資料不一致
+
+  4. service.js getWeekLunch 加入 optional weekDates 參數：
+     - getWeekLunch(weekDates = getThisWeekDates())
+     - 讓 regression test 可以注入固定日期，不依賴 wall clock
+
+◆ 測試
+
+  test/sync-selection.test.mjs（5 案）：
+    - 當期 + 未來菜單同時選取
+    - 排除異動公告與超過窗口的舊菜單
+    - meta.processed 節流 + force 機制
+    - 最新純文字公告也納入
+
+  test/cache-overlap.test.mjs（7 案）：
+    - 臨時 DATA_DIR 寫入 A(8/31~9/11) + B(9/14~9/24) cache
+    - 今日(9/8)/明日(9/9)/指定日期(9/8) 查詢 PASS
+    - 本週(9/7~9/13) formatWeekMessage 顯示 09/07~09/11
+    - 跨菜單：today=9/13 仍屬 A 週、today=9/14 開始用 B
+    - A 與 B 共存，互不覆蓋
+
+  完整 npm test：66/66 PASS（原 54 + 新增 12：selection 5 + overlap 7）。
+
+  Fresh E2E（臨時 DATA_DIR，真實 RSS + 真實 PDF）：
+    行政 1150914~0925-菜單公告 + 行政1150831~0904菜單 → 兩份都處理
+    cache updated (19 天：8/31~9/11 + 9/14~9/24)
+    2026-09-08 main: 三色炒麵 / 黑椒肉片燴飯 (擇一) ✓
+    2026-09-14 main: 沙茶肉丁 / 塔香雞腿 (擇一) ✓
+    2026-09-25: excluded（整天空資料驗證失敗）✓
+
+◆ 結論
+
+  第十五章「Render ephemeral storage」指出的现象（cache 消失後只剩最新菜單）
+  的真正機制是：startup sync 永遠只選最新一份（旧 pickTargets 行為），
+  而不是「merge 覆蓋」。Render 重啟觸發 sync → 只抓到最新 → 當期不見。
+
+  此修正後，即使 Render ephemeral storage 被清空（或首次部署），
+  startup sync 會同時選取「最新公告 + 近期所有帶 PDF 的正式菜單」，
+  當期菜單與未來菜單都進入 cache。
+
+  後當期菜單進入 cache 後，LINE 今日/本週/指定日期/明日 查詢自然全部正常。
+
+ ◆ 注意
+   本修正依課題規範未 commit / push / deploy，待確認後再執行。
 
 ==================================================
 【第十四章】Phase 10G-3 — 菜單異動公告自動套用（課題 15）

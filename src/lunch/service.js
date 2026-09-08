@@ -3,7 +3,17 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const LUNCH_DATA_PATH = path.resolve(__dirname, '../../data/lunch.json');
+
+// 與 sync.js 相同的資料目錄規則：
+// 沒設定 DATA_DIR → 預設使用專案 data/；有設定 → 使用該路徑。
+// 這樣 service 讀的 cache 與 sync 寫的 cache 永遠一致，
+// 避免「sync 寫進 DATA_DIR、service 卻讀專案 data/」的資料不一致。
+const DEFAULT_DATA_DIR = path.resolve(__dirname, '../../data');
+const DATA_DIR =
+  process.env.DATA_DIR && process.env.DATA_DIR.trim()
+    ? path.resolve(process.env.DATA_DIR.trim())
+    : DEFAULT_DATA_DIR;
+const LUNCH_DATA_PATH = path.join(DATA_DIR, 'lunch.json');
 
 export function getTodayString(date = new Date()) {
   return new Intl.DateTimeFormat('en-CA', {
@@ -369,9 +379,9 @@ export async function getTomorrowLunch() {
   return getLunchByDate(date);
 }
 
-export async function getWeekLunch() {
+export async function getWeekLunch(weekDates = getThisWeekDates()) {
   const data = await readLunchData();
-  return getThisWeekDates()
+  return weekDates
     .filter((date) => data[date])
     .map((date) => ({ date, lunch: data[date] }));
 }
