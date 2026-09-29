@@ -51,48 +51,118 @@ function extractAdYear(lines, dateY) {
   return null;
 }
 
-function parseDateColumns(dateLine) {
+// 月與斜線在同一個 token：「9/」「9/2」「10/2(」「9/29(一)」
+const MONTH_SLASH_TOKEN = /^\s*(\d{1,2})\s*[/／]/;
+// 純月份 token：「8」「9」「10」
+const MONTH_ONLY_TOKEN = /^\s*(\d{1,2})\s*$/;
+// 以斜線開頭的續段 token：「/」「/15」「/2(」
+const SLASH_LEADING_TOKEN = /^\s*\/+\s*/;
+
+/**
+ * 取出 token 開頭的日期數字。
+ *
+ * 官方 PDF 的星期標記可能被併進同一個 token（實測「10/2(五)」會被拆成
+ * 「10」「/2(」「五」「)」，其中日碼與左括號黏在同一個 token），
+ * 因此允許數字後面接著星期括號；其他內容（例如「2選1」）一律不視為日期。
+ */
+function leadingDateDigits(token) {
+  const str = String(token ?? '');
+  const m = /^\s*(\d{1,2})/.exec(str);
+  if (!m) return '';
+  const rest = str.slice(m[0].length);
+  if (rest !== '' && !/^\s*[（(]/.test(rest)) return '';
+  return m[1];
+}
+
+/**
+ * 解析「日期」那一列，回傳每個日期欄的 { month, day, center }。
+ *
+ * 官方日期欄的字元切法每份 PDF 都不同，實測觀察到：
+ *   「9/2」+「8」        （月/首碼 + 末碼）
+ *   「9/」+「30」       （月/ + 完整日碼）
+ *   「10」+「/」+「1」  （月 + / + 日碼）
+ *   「9」+「/」+「1」+「5」（月 + / + 日碼拆成兩個 glyph run）
+ *   「10」+「/2(」      （月 + 日碼與星期左括號黏在一起，10/2 曾因此整欄遺失）
+ * 因此改以「取出 token 開頭的日碼」統一處理，而不是比對整個 token 的形狀。
+ */
+export function parseDateColumns(dateLine) {
   const items = dateLine.items;
   const columns = [];
   for (let i = 0; i < items.length; i += 1) {
     const s = items[i].s;
     let month = null;
     let dayStr = '';
-    let center = null;
     let nextIdx = i + 1;
 
-    // 完整「8/31」或「8/」（月+斜線合併在同一個 token）
-    const full = /^(\d{1,2})\/(\d{1,2})?$/.exec(s);
-    if (full) {
-      month = Number(full[1]);
-      dayStr = full[2] ?? '';
-      center = items[i].x + 8;
+    const withSlash = MONTH_SLASH_TOKEN.exec(s);
+    if (withSlash) {
+      // 完整「9/2」「9/」之類：月與斜線在同一個 token
+      month = Number(withSlash[1]);
+      dayStr = leadingDateDigits(s.slice(withSlash[0].length));
     } else {
-      // 純月份「8」，下一個 token 必須是「/」或「/15」
-      const monthMatch = /^(\d{1,2})$/.exec(s);
+      // 純月份「8」「9」「10」，下一個 token 必須以斜線開頭
+      const monthMatch = MONTH_ONLY_TOKEN.exec(s);
       if (!monthMatch) continue;
-      const slash = /^(\/+)(\d{1,2})?$/.exec(items[nextIdx]?.s ?? '');
+      const slashToken = String(items[nextIdx]?.s ?? '');
+      const slash = SLASH_LEADING_TOKEN.exec(slashToken);
       if (!slash) continue;
       month = Number(monthMatch[1]);
-      dayStr = slash[2] ?? '';
-      center = items[i].x + 8;
+      dayStr = leadingDateDigits(slashToken.slice(slash[0].length));
       nextIdx += 1;
     }
     if (month < 1 || month > 12) continue;
 
-    // 從後續純數字 token 補齊不足的 day 位數
+    // 從後續 token 補齊不足的 day 位數（「9」+「/」+「1」+「5」→ 9/15）
     let k = nextIdx;
-    while (dayStr.length < 2 && /^\d{1,2}$/.test(items[k]?.s ?? '')) {
-      dayStr += items[k].s;
+    while (dayStr.length < 2) {
+      const digits = leadingDateDigits(items[k]?.s);
+      if (!digits) break;
+      dayStr += digits;
       k += 1;
     }
     if (!dayStr.length) continue;
     const day = Number(dayStr);
     if (day < 1 || day > 31) continue;
-    columns.push({ month, day, center });
+    columns.push({ month, day, center: items[i].x + 8 });
     i = k - 1;
   }
   return columns;
+}
+
+/** 官方日期欄每一欄都帶一個星期括號，例如「10/2(五)」。 */
+export function countWeekdayMarks(items) {
+  let count = 0;
+  for (const it of items) {
+    count += (String(it.s).match(/[（(]/g) ?? []).length;
+  }
+  return count;
+}
+
+/**
+ * 日期欄少於星期標記數 → 有整欄沒被辨識出來。
+ * 該欄的日期與菜色都會遺失，若靜默寫入 cache 就會出現「官方有、系統查不到」。
+ * 因此寧可讓本次同步失敗（保留舊 cache 並記錄原因），也不寫入不完整資料。
+ */
+export class DateColumnMismatchError extends Error {
+  constructor(details) {
+    super(
+      `日期欄解析不完整：偵測到 ${details.marks} 個星期欄位，只解析出 ${details.columns} 個日期欄（${details.found.join(', ') || '無'}）`
+    );
+    this.name = 'DateColumnMismatchError';
+    this.marks = details.marks;
+    this.columnCount = details.columns;
+    this.found = details.found;
+  }
+}
+
+function assertDateColumnsComplete(items, columns) {
+  const marks = countWeekdayMarks(items);
+  if (marks <= columns.length) return;
+  throw new DateColumnMismatchError({
+    marks,
+    columns: columns.length,
+    found: columns.map((c) => `${c.month}/${c.day}`),
+  });
 }
 
 function assignColumn(it, centers) {
@@ -162,6 +232,7 @@ export async function parseMenuPdf(buffer) {
       if (!dateLine) continue;
       const columns = parseDateColumns(dateLine);
       if (!columns.length) continue;
+      assertDateColumnsComplete(dateLine.items, columns);
       const year = extractAdYear(lines, dateLine.y);
       const allergenY = findAllergenY(lines, dateLine.y);
       const centers = columns.map((c) => c.center);
