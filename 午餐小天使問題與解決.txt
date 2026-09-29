@@ -1419,7 +1419,8 @@ AI 分析——把兩件事分開看（這是本章核心）：
   後當期菜單進入 cache 後，LINE 今日/本週/指定日期/明日 查詢自然全部正常。
 
  ◆ 注意
-   本修正依課題規範未 commit / push / deploy，待確認後再執行。
+   
+本修正依課題規範未 commit / push / deploy，待確認後再執行。
 
 ==================================================
 【第十四章】Phase 10G-3 — 菜單異動公告自動套用（課題 15）
@@ -1778,6 +1779,38 @@ Phase 10G-3 補充｜依需求書第 20 節格式
 　Render Persistent Disk 上的 lunch.json 可手動補一筆，但正確做法是
 	deploy 本修正後讓 sync 自行補齊，避免手寫資料與官方再次不一致。
 
+◆ 上線結果（2026-09-30 台北時間，Phase 10G-4 已正式 deploy）
+　 - commit 10fb496「fix: handle split lunch menu date tokens」，4 files changed
+　   （src/lunch/pdf.js、test/date-columns.test.mjs、test/line-1002-query.test.mjs、
+　    本文件）；未夾帶 assets/rich-menu.png、src/line/richMenu.js、src/server.js、docs/
+　 - push origin main 成功，origin/main == HEAD == 10fb496（未 force push）
+　 - Render service lunch-angel（srv-d9tbc83ncjis738sk800）
+　　 deploy dep-dau3pflg1s2s73fqd3p0 / build bld-dau3pflg1s2s73fqd3pg
+　　 newCommit=10fb496、buildStatus=succeeded、deployStatus=succeeded
+　　 finishedAt 2026-09-29T22:34:22Z（＝台北 2026-09-30 06:34）
+　 - Production：GET / → HTTP 200；GET /health → HTTP 200
+　　 {"status":"ok","service":"lunch-angel","ready":true}
+　　 ready=true 代表 scheduler 已在 markReady 之後啟動
+　 - Production webhook 實測：以 LINE_CHANNEL_SECRET HMAC-SHA256 簽章後送
+　　 {"events":[{"type":"message","message":{"text":"10/2"}}]} → 200 {"status":"ok"}
+　　 代表 deployed 版本的「日期解析 → 讀 production cache → 組回覆」整條路徑
+　　 執行無錯誤（不會推播給任何使用者：合成 replyToken 會被 LINE API 拒絕）。
+　　 對照組：不帶簽章 → 401 {"error":"Unauthorized"}，簽章驗證正常。
+　 - 功能回歸（以 27 天 E2E cache 跑 buildReplyText）：
+　　 今日午餐 2026/09/30（土魠魚羹麵、飯 / 豬肉羹麵、飯）正常
+　　 明日午餐 2026/10/01（蠔油肉丁 / 麻油雞）正常
+　　 本週午餐正常，且已包含 10/02 星期五完整菜色
+　　 指定日期查詢 10/2 正常、9/30 正常、10/5 正常
+　 - 未修改 Render Environment、未修改 LINE Console、未動 COL_TOLLERANCE。
+　 ※ 誠實揭露：Render 公開 REST API 不提供 service runtime log 內容
+　　（GET /v1/services/{id}/logs 回 404、/logs?serviceId= 回 400），
+　　因此「cache updated (...) 清單是否已列出 2026-10-02」無法由本機以 API 證明，
+　　需以 Render Dashboard log 或實際在 LINE 輸入 10/2 為準。
+　　production cache 更新時機：服務啟動時若「今日尚未成功同步」會立刻跑一次 sync，
+　　之後固定每日 05:00 Asia/Taipei；deploy 後的新 parser 會在下一次 sync 生效。
  ◆ 注意
-　本修正依課題規範未 commit / push / deploy，待確認後再執行。
+　本次僅修正「日期 token 被拆開導致整欄消失」，未改 COL_TOLLERANCE、未重構 parser、
+　未修改歷史資料、未動蔬菜語意（10/02 side4 仍為「季時蔬菜」）。
+　COL_TOLLERANCE 可能讓 9/8、10/8 的「滷味麵」被丟棄，屬另一個獨立問題，
+　需另立一次修正與全量回歸，本次不處理。
 ==================================================
